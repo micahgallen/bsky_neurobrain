@@ -1,0 +1,77 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Run consumer (ingests posts from Bluesky firehose)
+venv/bin/python -m src.consumer
+
+# Run Flask server
+venv/bin/python -c "from src.server import app; app.run(host='0.0.0.0', port=5000)"
+
+# Register/unregister feed with Bluesky
+PYTHONPATH=. venv/bin/python scripts/publish_feed.py
+PYTHONPATH=. venv/bin/python scripts/unpublish_feed.py
+
+# Analyze classification logs
+venv/bin/python scripts/analyze_classifications.py
+
+# Test prefilter
+venv/bin/python -c "from src.prefilter import passes_prefilter; print(passes_prefilter('fMRI study on hippocampal memory'))"
+
+# Test classifier (requires Ollama running)
+venv/bin/python -c "from src.classifier import classify_post; print(classify_post('dopamine modulates working memory'))"
+
+# Manage production services
+sudo systemctl restart neurobrain-server neurobrain-consumer neurobrain-tunnel
+journalctl -u neurobrain-consumer -f   # watch consumer logs
+```
+
+## Architecture
+
+Real-time pipeline that filters Bluesky's firehose down to cognitive science posts:
+
+```
+Jetstream WebSocket (~500 posts/sec)
+    → consumer.py: English filter
+    → prefilter.py: regex keyword scan (~95% rejected, ~0ms)
+    → classifier.py: Ollama/Qwen 2.5 3B binary classification (~170ms on GPU)
+    → database.py: store approved post URIs in SQLite
+    → server.py: serve feed skeleton to Bluesky via Flask
+```
+
+Each stage dramatically reduces volume before the next expensive operation. The prefilter is essentially free; only ~1-10 posts/sec reach the LLM.
+
+### Key module relationships
+
+- **`consumer.py`** is the pipeline orchestrator. It imports `prefilter.passes_prefilter()` and `classifier.classify_post()`, calling them in sequence for each post. It writes to `Post` and `SubscriptionState` tables.
+- **`classifier.py`** calls Ollama's HTTP API (`POST /api/generate`) and logs every result to `ClassificationLog`. Takes an optional `uri` parameter for traceability.
+- **`server.py`** is independent of the consumer. It reads from the `Post` table via the algo handler registered in `src/algos/__init__.py`.
+- **`algos/__init__.py`** maps `FEED_URI` → `neurobrain.handler`. The handler in `algos/neurobrain.py` queries posts by `indexed_at DESC` with cursor pagination (`{timestamp_ms}::{cid}` format).
+- **`config.py`** loads `.env` via python-dotenv. `SERVICE_DID` auto-derives from `HOSTNAME` as `did:web:{HOSTNAME}` if not set explicitly.
+
+### Two independent processes
+
+The consumer and server run as separate processes. The consumer writes to SQLite; the server reads from it. They share no in-process state.
+
+## Deployment
+
+Three systemd services in `deploy/`:
+- `neurobrain-server.service` — Flask on port 5000
+- `neurobrain-consumer.service` — Jetstream consumer (depends on `ollama.service`)
+- `neurobrain-tunnel.service` — Cloudflare named tunnel (`neurobrain.uk` → localhost:5000)
+
+Cloudflare tunnel config: `~/.cloudflared/config.yml`
+
+Ollama systemd override: `/etc/systemd/system/ollama.service.d/override.conf` (sets `OLLAMA_HOST=127.0.0.1` and `HSA_OVERRIDE_GFX_VERSION=10.3.0` for AMD RX 6700 XT)
+
+## Constraints
+
+- **Cursor format is `{timestamp_ms}::{cid}`** — required by Bluesky clients for pagination.
+- **Scripts need `PYTHONPATH=.`** — `scripts/` files import from `src.*` but aren't inside the package.
+- **Ollama must be running** for the consumer to classify posts. Without it, posts that pass the prefilter get logged as ERROR and rejected.
+- **Consumer resumes from cursor** — `SubscriptionState` stores `time_us` (Unix microseconds). On restart, no posts are re-processed. Cursor is persisted every 50 messages.
+- **Flask must NOT run with `debug=True`** in production — it enables remote code execution via the Werkzeug debugger.
+- **`.env` contains the Bluesky app password** — never commit it. File permissions should be `600`.
