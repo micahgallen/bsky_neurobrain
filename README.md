@@ -41,6 +41,37 @@ Bluesky Firehose (~500 posts/sec)
 3. Posts that pass the pre-filter are sent to a Qwen 2.5 3B model running on Ollama for binary classification (RELEVANT / NOT_RELEVANT). The LLM distinguishes real research discussion from casual uses of science words.
 4. Approved posts are stored in SQLite and served to the Bluesky app via a Flask API.
 
+### Classification prompt
+
+```
+You are a classifier for a cognitive science feed. Classify the following
+social media post as RELEVANT or NOT_RELEVANT.
+
+RELEVANT posts are about:
+- Neuroscience (brain research, neural mechanisms, neuroimaging, neurotransmitters)
+- Psychology (cognition, perception, memory, attention, learning, decision-making)
+- Cognitive anthropology (cultural cognition, cognitive ecology)
+- Philosophy of mind (consciousness, qualia, mental representation, free will)
+- Linguistics (syntax, semantics, language acquisition, psycholinguistics)
+- Cognitive science methods (fMRI, EEG, behavioral experiments, computational models)
+
+NOT_RELEVANT posts include:
+- Political opinions or policy debates, even if they mention science
+- Pop psychology or self-help without scientific substance
+- Science-adjacent content that is primarily social commentary
+- Posts about AI/ML unless explicitly about biological cognition or brain-inspired models
+- Clinical/medical advice (psychiatry prescriptions, therapy recommendations)
+- Posts primarily promoting a product, event, or personal brand
+- Casual or figurative uses of "brain", "mind", "memory", or "free will"
+- Personal anecdotes about thinking or feeling, even if using scientific vocabulary
+- Motivational or poetic statements about cognition without scientific content
+
+Respond with ONLY "RELEVANT" or "NOT_RELEVANT". Nothing else.
+
+Post: "{post_text}"
+Classification:
+```
+
 ## Tech stack
 
 | Component | Technology |
