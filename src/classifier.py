@@ -27,11 +27,14 @@ NOT_RELEVANT posts include:
 - Posts about AI/ML unless explicitly about biological cognition or brain-inspired models
 - Clinical/medical advice (psychiatry prescriptions, therapy recommendations)
 - Posts primarily promoting a product, event, or personal brand
+- Casual or figurative uses of "brain", "mind", "memory", or "free will"
+- Personal anecdotes about thinking or feeling, even if using scientific vocabulary
+- Motivational or poetic statements about cognition without scientific content
 
 Respond with ONLY "RELEVANT" or "NOT_RELEVANT". Nothing else."""
 
 
-def classify_post(text: str) -> bool:
+def classify_post(text: str, uri: str = "") -> bool:
     """Classify a post using Ollama. Returns True if RELEVANT, False otherwise."""
     prompt = f'{_SYSTEM_PROMPT}\n\nPost: "{text}"\nClassification:'
 
@@ -59,7 +62,6 @@ def classify_post(text: str) -> bool:
 
     # Log the classification
     try:
-        uri = ""  # URI is set by the consumer when context is available
         db.connect(reuse_if_open=True)
         ClassificationLog.create(
             uri=uri,

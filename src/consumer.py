@@ -64,7 +64,7 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     logger.info("Candidate: %s — %.80s", uri, text)
 
     # LLM classification
-    if not classify_post(text):
+    if not classify_post(text, uri=uri):
         logger.debug("Rejected by classifier: %s", uri)
         return
 
