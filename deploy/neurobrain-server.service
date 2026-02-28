@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuroBrain Feed Server
+After=network.target
+
+[Service]
+Type=simple
+User=micah
+WorkingDirectory=/home/micah/vibes/bsky_neurobrain
+ExecStart=/home/micah/vibes/bsky_neurobrain/venv/bin/python -c "from src.server import app; app.run(host='0.0.0.0', port=5000)"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

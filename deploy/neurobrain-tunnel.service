@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuroBrain Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=micah
+ExecStart=/home/micah/.local/bin/cloudflared tunnel run neurobrain
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

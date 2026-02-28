@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuroBrain Jetstream Consumer
+After=network.target ollama.service
+
+[Service]
+Type=simple
+User=micah
+WorkingDirectory=/home/micah/vibes/bsky_neurobrain
+ExecStart=/home/micah/vibes/bsky_neurobrain/venv/bin/python -m src.consumer
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
