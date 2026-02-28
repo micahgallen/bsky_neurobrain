@@ -318,6 +318,13 @@ _EXCLUSION_TERMS = [
     r"legislation", r"partisan", r"liberal", r"conservative",
     r"left-wing", r"right-wing", r"woke", r"anti-woke", r"cancel culture",
     r"culture war", r"immigration policy", r"gun control", r"abortion",
+    # Geopolitics / conflict
+    r"Israel\w*", r"Palestin\w*", r"Hamas", r"Hezbollah", r"Gaza",
+    r"West Bank", r"Zionist\w*", r"antisemit\w*", r"IDF",
+    r"Iran\w*", r"NATO", r"Ukraine", r"Russia\w*", r"Putin",
+    r"genocide", r"apartheid", r"colony", r"coloniz\w*",
+    r"war crime\w*", r"bombing", r"missile\w*", r"invasion",
+    r"ceasefire", r"sanction\w*", r"refugee\w*",
     # Crypto
     r"crypto", r"bitcoin", r"NFT", r"stonks", r"meme stock\w*",
     # Pseudoscience

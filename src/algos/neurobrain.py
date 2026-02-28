@@ -45,4 +45,8 @@ def handler(cursor, limit):
         score_x100 = int(post.feed_score * 100)
         new_cursor = f"{score_x100}::{ts_ms}::{post.cid}"
 
+    # Only return cursor if we filled the page — signals more results available
+    if len(feed) < limit:
+        new_cursor = None
+
     return {"cursor": new_cursor, "feed": feed}

@@ -40,6 +40,17 @@ class SubscriptionState(BaseModel):
     cursor = BigIntegerField()
 
 
+class SignalPost(BaseModel):
+    uri = CharField(unique=True, index=True)
+    cid = CharField()
+    indexed_at = DateTimeField(default=datetime.datetime.utcnow, index=True)
+
+
+class PoliticsLog(BaseModel):
+    did = CharField(index=True)
+    detected_at = DateTimeField(default=datetime.datetime.utcnow)
+
+
 class ClassificationLog(BaseModel):
     uri = CharField()
     text = CharField()
@@ -100,5 +111,5 @@ def _migrate_db():
 
 def init_db():
     db.connect(reuse_if_open=True)
-    db.create_tables([Post, SubscriptionState, ClassificationLog])
+    db.create_tables([Post, SubscriptionState, ClassificationLog, SignalPost, PoliticsLog])
     _migrate_db()

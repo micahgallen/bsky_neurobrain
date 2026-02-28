@@ -14,8 +14,9 @@ venv/bin/python -c "from src.server import app; app.run(host='0.0.0.0', port=500
 # Run engagement updater (fetches likes/reposts, computes feed scores)
 venv/bin/python -c "from src.engagement import main; main()"
 
-# Register/unregister feed with Bluesky
+# Register/unregister feeds with Bluesky
 PYTHONPATH=. venv/bin/python scripts/publish_feed.py
+PYTHONPATH=. venv/bin/python scripts/publish_signal_feed.py
 PYTHONPATH=. venv/bin/python scripts/unpublish_feed.py
 
 # Analyze classification logs
@@ -26,6 +27,12 @@ venv/bin/python -c "from src.prefilter import passes_prefilter; print(passes_pre
 
 # Test classifier (requires Ollama running)
 venv/bin/python -c "from src.classifier import classify_post; print(classify_post('dopamine modulates working memory'))"
+
+# Test politics classifier
+venv/bin/python -c "from src.classifier import classify_politics; print(classify_politics('Trump is ruining the country'))"
+
+# Test follow list loading
+venv/bin/python -c "from src.follows import load_follows; from src.config import HANDLE, PASSWORD; print(f'{len(load_follows(HANDLE, PASSWORD))} follows')"
 
 # Manage production services
 sudo systemctl restart neurobrain-server neurobrain-consumer neurobrain-engagement neurobrain-tunnel
@@ -53,13 +60,31 @@ Jetstream WebSocket (~500 posts/sec)
 
 Each stage dramatically reduces volume before the next expensive operation. The prefilter is essentially free; only ~1-10 posts/sec reach the LLM.
 
+### Signal feed (politics-free following feed)
+
+Parallel path in the same consumer process:
+
+```
+Jetstream (~500 posts/sec)
+    → consumer.py: Is author in follow set? (O(1) set lookup) — no → skip
+    → consumer.py: English filter, min length
+    → classifier.py: classify_politics() — YES/NO via Ollama (~140ms)
+        - Political → drop
+    → database.py: store in SignalPost table (chronological, no scoring)
+    → algos/signal.py: serve chronological feed via 2-part cursor
+```
+
+Follow set is loaded at startup and refreshed every 30 minutes. A post can appear in both feeds.
+
 ### Key module relationships
 
-- **`consumer.py`** is the pipeline orchestrator. It extracts hashtags from post facets, calls `prefilter.passes_prefilter()` and `prefilter.check_hashtags()`, then `classifier.classify_post()` in sequence. It writes to `Post` and `SubscriptionState` tables.
+- **`consumer.py`** is the pipeline orchestrator. It runs both NeuroBrain and Signal paths. For NeuroBrain: extracts hashtags, calls `prefilter.passes_prefilter()` and `prefilter.check_hashtags()`, then `classifier.classify_post()`. For Signal: checks follow set membership, calls `classifier.classify_politics()`. Writes to `Post`, `SignalPost`, and `SubscriptionState` tables.
 - **`classifier.py`** calls Ollama's HTTP API (`POST /api/generate`) and returns a quality score 1-5. Logs every result to `ClassificationLog`. Takes an optional `uri` parameter for traceability.
 - **`engagement.py`** runs as a separate process. Every 5 minutes it fetches engagement metrics (likes, reposts, replies, quotes) from the Bluesky API for posts from the last 48 hours and computes a composite `feed_score`.
 - **`server.py`** is independent of the consumer. It reads from the `Post` table via the algo handler registered in `src/algos/__init__.py`.
 - **`algos/neurobrain.py`** queries posts by `feed_score DESC, indexed_at DESC` with cursor pagination (`{score_x100}::{timestamp_ms}::{cid}` format, with legacy 2-part cursor support).
+- **`algos/signal.py`** queries `SignalPost` by `indexed_at DESC` with simple 2-part cursor (`{timestamp_ms}::{cid}`).
+- **`follows.py`** fetches the user's follow list via `atproto` client, returns a `set[str]` of DIDs for O(1) lookup.
 - **`config.py`** loads `.env` via python-dotenv. `SERVICE_DID` auto-derives from `HOSTNAME` as `did:web:{HOSTNAME}` if not set explicitly.
 
 ### Three independent processes
@@ -80,7 +105,8 @@ Ollama systemd override: `/etc/systemd/system/ollama.service.d/override.conf` (s
 
 ## Constraints
 
-- **Cursor format is `{score_x100}::{timestamp_ms}::{cid}`** — used by the feed handler for keyset pagination. Legacy `{timestamp_ms}::{cid}` format also supported.
+- **NeuroBrain cursor format is `{score_x100}::{timestamp_ms}::{cid}`** — used by the NeuroBrain feed handler for keyset pagination. Legacy `{timestamp_ms}::{cid}` format also supported.
+- **Signal cursor format is `{timestamp_ms}::{cid}`** — simple chronological pagination.
 - **Scripts need `PYTHONPATH=.`** — `scripts/` files import from `src.*` but aren't inside the package.
 - **Ollama must be running** for the consumer to classify posts. Without it, posts that pass the prefilter get logged as ERROR and rejected.
 - **Consumer resumes from cursor** — `SubscriptionState` stores `time_us` (Unix microseconds). On restart, no posts are re-processed. Cursor is persisted every 50 messages.

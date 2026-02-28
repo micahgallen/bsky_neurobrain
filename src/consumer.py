@@ -1,13 +1,16 @@
 import asyncio
 import json
 import logging
+import re
 import signal
+import time
 
 import websockets
 
-from src.database import db, Post, SubscriptionState, init_db
+from src.config import HANDLE, PASSWORD, SIGNAL_FEED_URI
+from src.database import db, Post, SignalPost, PoliticsLog, SubscriptionState, init_db
 from src.prefilter import passes_prefilter, check_hashtags
-from src.classifier import classify_post
+from src.classifier import classify_post, classify_politics
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +21,11 @@ JETSTREAM_URL = (
 SERVICE_NAME = "jetstream"
 CURSOR_UPDATE_INTERVAL = 50  # Update cursor every N messages
 QUALITY_THRESHOLD = 3  # Minimum score to include in feed
+FOLLOW_REFRESH_INTERVAL = 1800  # Refresh follow list every 30 minutes
+
+# Follow set and last refresh time (module-level for access in _handle_create)
+_follow_set: set[str] = set()
+_follow_set_updated: float = 0
 
 
 def _get_cursor() -> int | None:
@@ -44,6 +52,9 @@ def _handle_delete(uri: str) -> None:
     deleted = Post.delete().where(Post.uri == uri).execute()
     if deleted:
         logger.info("Deleted post: %s", uri)
+    deleted_signal = SignalPost.delete().where(SignalPost.uri == uri).execute()
+    if deleted_signal:
+        logger.info("Deleted signal post: %s", uri)
 
 
 def _extract_hashtags(record: dict) -> list[str]:
@@ -58,6 +69,22 @@ def _extract_hashtags(record: dict) -> list[str]:
     return tags
 
 
+def _handle_signal(did: str, rkey: str, cid: str, text: str) -> None:
+    """Process a post for the Signal feed (followed accounts, no politics)."""
+    if not _follow_set or did not in _follow_set:
+        return
+
+    if classify_politics(text):
+        uri = f"at://{did}/app.bsky.feed.post/{rkey}"
+        logger.debug("Signal rejected (political): %s", uri)
+        PoliticsLog.create(did=did)
+        return
+
+    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
+    SignalPost.insert(uri=uri, cid=cid).on_conflict_ignore().execute()
+    logger.info("Signal approved: %s — %.80s", uri, text)
+
+
 def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     """Process a new post through the filter pipeline."""
     # English only
@@ -69,10 +96,26 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     if len(text) < 30:
         return
 
+    # Signal feed: check followed accounts (runs before NeuroBrain filters)
+    if SIGNAL_FEED_URI:
+        _handle_signal(did, rkey, cid, text)
+
     # Skip bot-like posts: just a title/header with no real content
     # e.g. 'Feed: "Neuroscience News"\nPublished on Friday, ...'
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
     if len(lines) <= 2 and len(text) < 80:
+        return
+
+    # Skip emoji-heavy posts — bots and promotional accounts use heavy emoji;
+    # real scientists almost never do. Threshold: 4+ emoji in a single post.
+    emoji_count = len(re.findall(
+        r"[\U0001F300-\U0001F9FF\U00002702-\U000027B0\U0000FE00-\U0000FE0F"
+        r"\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF"
+        r"\U0000200D\U00002B50\U00002B55\U000023CF\U000023E9-\U000023F3"
+        r"\U000023F8-\U000023FA\U0000231A\U0000231B]",
+        text,
+    ))
+    if emoji_count >= 4:
         return
 
     # Check quoted post text against exclusion filter — catches political
@@ -112,9 +155,26 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     logger.info("Approved (score=%d): %s", score, uri)
 
 
+def _refresh_follows() -> None:
+    """Load or refresh the follow set if needed."""
+    global _follow_set, _follow_set_updated
+    if not SIGNAL_FEED_URI or not HANDLE or not PASSWORD:
+        return
+    now = time.monotonic()
+    if now - _follow_set_updated < FOLLOW_REFRESH_INTERVAL and _follow_set:
+        return
+    try:
+        from src.follows import load_follows
+        _follow_set = load_follows(HANDLE, PASSWORD)
+        _follow_set_updated = now
+    except Exception:
+        logger.exception("Failed to refresh follow set")
+
+
 async def _consume() -> None:
     """Connect to Jetstream and process messages."""
     init_db()
+    _refresh_follows()
 
     cursor = _get_cursor()
     url = JETSTREAM_URL
@@ -138,6 +198,7 @@ async def _consume() -> None:
                 msg_count += 1
                 if msg_count % CURSOR_UPDATE_INTERVAL == 0:
                     _save_cursor(time_us)
+                    _refresh_follows()
 
             if msg.get("kind") != "commit":
                 continue

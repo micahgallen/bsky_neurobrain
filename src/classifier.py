@@ -41,47 +41,37 @@ SCORE 1-2 (not relevant) for:
 
 Respond with ONLY a single digit: 1, 2, 3, 4, or 5. Nothing else."""
 
-# v2: Expert detection — "does this sound like a scientist being a scientist?"
+# v2: Expert science conversation — interesting and apolitical
 _PROMPT_V2 = """\
-You are a classifier for a cognitive science feed. Your job is to detect \
-whether a post sounds like it was written by a scientist or academic expert.
+You are a classifier for a science feed. Is this post an interesting, \
+expert-level discussion about science?
 
-We want to catch scientists being scientists: sharing their papers, debating \
-theories, musing about ideas, discussing findings, even academic drama and \
-gossip. The specific topic matters less than whether the author demonstrates \
-genuine scientific expertise and insider knowledge.
+Score 1-5:
+5 - Shares or discusses specific research, papers, data, or scientific findings
+4 - Expert scientific discussion: debates theories, critiques methods, or shares insights
+3 - Informed science content with genuine substance
+2 - Casual or superficial mention of science without depth
+1 - Not science: political, personal, promotional, self-help, or metaphorical
 
-Rate the post 1-5:
-5 - Clearly a scientist: shares or discusses specific research, papers, data, \
-or findings with insider knowledge and technical fluency
-4 - Very likely a scientist: engages with scientific ideas at a professional \
-level, expresses informed opinions, debates with nuance and depth
-3 - Informed contributor: demonstrates real knowledge of the field, could be \
-a grad student, science journalist, or educated enthusiast adding genuine insight
-2 - Layperson: uses scientific terms but without real expertise, restates \
-textbook basics, shares pop-sci links without adding insight
-1 - Not scientific: uses science words as metaphor, political commentary, \
-personal anecdote, self-help, motivational content
+Score 4-5 when the author shows real scientific knowledge — referencing \
+specific studies, using technical terms naturally, or engaging with methodology.
 
-SOUNDS LIKE A SCIENTIST (score 4-5):
-- References specific studies, papers, datasets, or conferences
-- Uses technical terminology naturally as part of normal vocabulary
-- Discusses methodology, limitations, or implications
-- Expresses informed disagreement or debate with other researchers
-- Shares their own or colleagues' work
-- Discusses scientific ideas with assumed background knowledge
-- Academic tone: even casual posts show deep familiarity with the field
-- Inside-baseball academic discussion (hiring, review, scientific culture)
+ALWAYS score 1 if the post is political in any way, even if it mentions science.
 
-DOES NOT SOUND LIKE A SCIENTIST (score 1-2):
-- Uses scientific terms as political weapons ("dementia", "brainwashed")
-- Restates textbook definitions without adding original thought
-- Personal anecdotes dressed in scientific vocabulary
-- Pop-psychology platitudes or self-help framing
-- Primarily emotional or political rather than analytical
-- Vague "studies show" without specifics or engagement
+Respond with ONLY a single digit: 1, 2, 3, 4, or 5."""
 
-Respond with ONLY a single digit: 1, 2, 3, 4, or 5. Nothing else."""
+_PROMPT_POLITICS = """\
+Is this post political? Answer YES if it is about ANY of these:
+- Politicians, political parties, elections, voting
+- Government policy, legislation, regulations
+- War, military action, geopolitical conflict
+- Political commentary, activism, or protest
+- Culture war topics, partisan debate
+- Authoritarianism, dictators, political violence
+- News about government actions or political events
+Answer NO if the post is about personal life, science, art, sports, \
+hobbies, work, humor, or other non-political topics.
+Reply with only YES or NO."""
 
 _PROMPTS = {
     "v1": _PROMPT_V1,
@@ -92,24 +82,29 @@ _PROMPTS = {
 def classify_post(text: str, uri: str = "") -> int:
     """Classify a post using Ollama. Returns quality score 1-5 (0 on error)."""
     system_prompt = _PROMPTS.get(CLASSIFIER_VERSION, _PROMPT_V2)
-    prompt = f'{system_prompt}\n\nPost: "{text}"\nScore:'
 
     try:
         resp = requests.post(
-            f"{OLLAMA_URL}/api/generate",
+            f"{OLLAMA_URL}/api/chat",
             json={
                 "model": OLLAMA_MODEL,
-                "prompt": prompt,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f'Post: "{text}"\nScore:'},
+                ],
                 "stream": False,
+                "think": False,
                 "options": {
-                    "temperature": 0,
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
                     "num_predict": 5,
                 },
             },
-            timeout=5,
+            timeout=10,
         )
         resp.raise_for_status()
-        answer = resp.json().get("response", "").strip()
+        answer = resp.json().get("message", {}).get("content", "").strip()
 
         # Parse score: extract first digit 1-5
         score = 0
@@ -145,3 +140,33 @@ def classify_post(text: str, uri: str = "") -> int:
         logger.exception("Failed to log classification")
 
     return score
+
+
+def classify_politics(text: str) -> bool:
+    """Return True if the post is political (should be dropped)."""
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+                    {"role": "system", "content": _PROMPT_POLITICS},
+                    {"role": "user", "content": text},
+                ],
+                "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                    "num_predict": 5,
+                },
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        answer = resp.json().get("message", {}).get("content", "").strip().upper()
+        return answer.startswith("YES")
+    except Exception:
+        logger.exception("Politics classification failed")
+        return False

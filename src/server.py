@@ -46,6 +46,8 @@ def get_feed_skeleton():
     limit = max(1, min(limit, 100))
 
     body = algo(cursor, limit)
+    if body.get("cursor") is None:
+        body.pop("cursor", None)
     return jsonify(body)
 
 
