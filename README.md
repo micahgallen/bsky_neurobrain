@@ -72,6 +72,30 @@ Post: "{post_text}"
 Classification:
 ```
 
+### Keyword pre-filter
+
+Posts must contain at least one inclusion keyword and no exclusion keywords to reach the LLM. All matching is case-insensitive with word boundaries.
+
+**Inclusion keywords:**
+
+| Category | Keywords |
+|----------|----------|
+| Neuroscience | neurosci*, neuron*, synaps*, cortex, cortical, hippocampus, hippocampal, amygdala, prefrontal, cerebellum, dopamine, serotonin, norepinephrine, GABA, glutamate, neuroplasticity, axon*, dendrit*, glia*, astrocyte*, microglia, myelin, fMRI, EEG, MEG, neuroimaging, brain scan, connectome, tractography, optogenetics, electrophysiology, neurotransmitter*, neuropeptide*, neural circuit*, brain region*, thalamus, basal ganglia, striatum, brainstem, white matter, gray matter, blood-brain barrier, neuro*, CNS, PNS |
+| Psychology | cognition, cognitive, perception, working memory, long-term memory, episodic memory, semantic memory, procedural memory, executive function, decision making, metacognition, cognitive load, priming, implicit memory, explicit memory, cognitive bias, heuristic*, psychophysics, reaction time, signal detection, mental model*, schema, chunking, interference, encoding, retrieval, habituation, sensitization, conditioning, reinforcement, developmental psych*, cognitive development, Piaget, Vygotsky, theory of mind, false belief, joint attention, psycholinguistic*, visual perception, auditory perception, multisensory, crossmodal |
+| Philosophy of mind | consciousness, qualia, phenomenal, hard problem, explanatory gap, intentionality, mental representation, functionalism, dualism, physicalism, panpsychism, integrated information, global workspace, higher-order thought, neural correlates of consciousness, NCC, determinism, mental causation, supervenience, philosophy of mind, phenomenology, embodied cognition, enactivism, extended mind, predictive processing, Bayesian brain, active inference, free energy principle |
+| Linguistics | syntax, morphology, phonology, phonetics, semantics, pragmatics, linguistic*, language acquisition, universal grammar, Chomsky, minimalism, generative grammar, neurolinguistic*, Broca, Wernicke, aphasia, dyslexia, bilingual*, multilingual*, speech perception, speech production, prosody, discourse, language processing, garden path, parsing, lexical access, word recognition, sentence processing, language comprehension |
+| Cognitive anthropology | cognitive anthropology, cultural cognition, ethnoscience, folk taxonomy, cognitive ecology, distributed cognition, situated cognition, cultural evolution, cognitive niche, cumulative culture, social learning, imitation, emulation, cultural transmission, cognitive archaeology |
+| Methods | peer-reviewed, preprint, study finds, researchers found, meta-analysis, replication, effect size, statistical significance, p-value, confidence interval, sample size, longitudinal, randomized controlled, double-blind, neuropsychology, computational model*, simulation, cognitive science, cogsci, behavioral experiment*, eye tracking, pupillometry, TMS, tDCS, lesion study, case study, single-cell recording |
+
+**Exclusion keywords** (reject even if inclusion keywords match):
+
+| Category | Keywords |
+|----------|----------|
+| Politics | Trump, Biden, Democrat*, Republican*, GOP, MAGA, election, vote, politician*, Congress, Senate, legislation, partisan, liberal, conservative, left-wing, right-wing, woke, anti-woke, cancel culture, culture war, immigration policy, gun control, abortion |
+| Crypto | crypto, bitcoin, NFT, stonks, meme stock* |
+| Pseudoscience | astrology, horoscope, zodiac, manifesting |
+| Sports | sports score*, fantasy league*, game tonight |
+
 ## Tech stack
 
 | Component | Technology |
