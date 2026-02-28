@@ -1,0 +1,6 @@
+flask
+peewee
+websockets
+requests
+python-dotenv
+atproto
