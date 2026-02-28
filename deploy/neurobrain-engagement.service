@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuroBrain Engagement Updater
+After=network.target
+
+[Service]
+Type=simple
+User=micah
+WorkingDirectory=/home/micah/vibes/bsky_neurobrain
+ExecStart=/home/micah/vibes/bsky_neurobrain/venv/bin/python -c "from src.engagement import main; main()"
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

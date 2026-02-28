@@ -6,7 +6,7 @@ import signal
 import websockets
 
 from src.database import db, Post, SubscriptionState, init_db
-from src.prefilter import passes_prefilter
+from src.prefilter import passes_prefilter, check_hashtags
 from src.classifier import classify_post
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ JETSTREAM_URL = (
 )
 SERVICE_NAME = "jetstream"
 CURSOR_UPDATE_INTERVAL = 50  # Update cursor every N messages
+QUALITY_THRESHOLD = 3  # Minimum score to include in feed
 
 
 def _get_cursor() -> int | None:
@@ -45,6 +46,18 @@ def _handle_delete(uri: str) -> None:
         logger.info("Deleted post: %s", uri)
 
 
+def _extract_hashtags(record: dict) -> list[str]:
+    """Extract hashtag strings from Bluesky post facets."""
+    tags = []
+    for facet in record.get("facets") or []:
+        for feature in facet.get("features") or []:
+            if feature.get("$type") == "app.bsky.richtext.facet#tag":
+                tag = feature.get("tag", "")
+                if tag:
+                    tags.append(tag)
+    return tags
+
+
 def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     """Process a new post through the filter pipeline."""
     # English only
@@ -53,24 +66,50 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
         return
 
     text = record.get("text", "")
-    if not text:
+    if len(text) < 30:
         return
 
-    # Keyword pre-filter
-    if not passes_prefilter(text):
+    # Skip bot-like posts: just a title/header with no real content
+    # e.g. 'Feed: "Neuroscience News"\nPublished on Friday, ...'
+    lines = [ln for ln in text.strip().splitlines() if ln.strip()]
+    if len(lines) <= 2 and len(text) < 80:
+        return
+
+    # Check quoted post text against exclusion filter — catches political
+    # quote-posts that use science as metaphor (e.g., Pavlov quote-tweeting Trump)
+    embed = record.get("embed") or {}
+    quoted_text = ((embed.get("record") or {}).get("record") or {}).get("text", "")
+    if quoted_text:
+        from src.prefilter import _EXCLUSION_RE, _normalize_unicode
+        if _EXCLUSION_RE.search(_normalize_unicode(quoted_text)):
+            return
+
+    # Extract hashtags from structured facets
+    hashtags = _extract_hashtags(record)
+
+    # Science hashtag bypasses keyword prefilter, but classifier still gates
+    has_science_hashtag = check_hashtags(hashtags)
+    if not has_science_hashtag and not passes_prefilter(text):
         return
 
     uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-    logger.info("Candidate: %s — %.80s", uri, text)
+    if has_science_hashtag:
+        logger.info("Hashtag bypass: %s — tags: %s — %.80s", uri, hashtags, text)
+    else:
+        logger.info("Candidate: %s — %.80s", uri, text)
 
-    # LLM classification
-    if not classify_post(text, uri=uri):
-        logger.debug("Rejected by classifier: %s", uri)
+    # LLM classification — returns quality score 1-5
+    score = classify_post(text, uri=uri)
+
+    if score < QUALITY_THRESHOLD:
+        logger.debug("Rejected (score=%d): %s", score, uri)
         return
 
-    # Store approved post
-    Post.insert(uri=uri, cid=cid).on_conflict_ignore().execute()
-    logger.info("Approved: %s", uri)
+    # Store approved post with quality score; initial feed_score = quality_score
+    Post.insert(
+        uri=uri, cid=cid, quality_score=score, feed_score=float(score)
+    ).on_conflict_ignore().execute()
+    logger.info("Approved (score=%d): %s", score, uri)
 
 
 async def _consume() -> None:
