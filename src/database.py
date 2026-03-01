@@ -51,6 +51,12 @@ class PoliticsLog(BaseModel):
     detected_at = DateTimeField(default=datetime.datetime.utcnow)
 
 
+class InteroPost(BaseModel):
+    uri = CharField(unique=True, index=True)
+    cid = CharField()
+    indexed_at = DateTimeField(default=datetime.datetime.utcnow, index=True)
+
+
 class ClassificationLog(BaseModel):
     uri = CharField()
     text = CharField()
@@ -111,5 +117,5 @@ def _migrate_db():
 
 def init_db():
     db.connect(reuse_if_open=True)
-    db.create_tables([Post, SubscriptionState, ClassificationLog, SignalPost, PoliticsLog])
+    db.create_tables([Post, SubscriptionState, ClassificationLog, SignalPost, PoliticsLog, InteroPost])
     _migrate_db()

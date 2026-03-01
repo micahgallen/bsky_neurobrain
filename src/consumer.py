@@ -7,10 +7,11 @@ import time
 
 import websockets
 
-from src.config import HANDLE, PASSWORD, SIGNAL_FEED_URI
-from src.database import db, Post, SignalPost, PoliticsLog, SubscriptionState, init_db
+from src.config import HANDLE, PASSWORD, SIGNAL_FEED_URI, INTERO_FEED_URI
+from src.database import db, Post, SignalPost, InteroPost, PoliticsLog, SubscriptionState, init_db
 from src.prefilter import passes_prefilter, check_hashtags
-from src.classifier import classify_post, classify_politics
+from src.classifier import classify_post, classify_politics, classify_intero
+from src.intero_prefilter import passes_intero_prefilter
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ def _handle_delete(uri: str) -> None:
     deleted_signal = SignalPost.delete().where(SignalPost.uri == uri).execute()
     if deleted_signal:
         logger.info("Deleted signal post: %s", uri)
+    deleted_intero = InteroPost.delete().where(InteroPost.uri == uri).execute()
+    if deleted_intero:
+        logger.info("Deleted intero post: %s", uri)
 
 
 def _extract_hashtags(record: dict) -> list[str]:
@@ -85,6 +89,21 @@ def _handle_signal(did: str, rkey: str, cid: str, text: str) -> None:
     logger.info("Signal approved: %s — %.80s", uri, text)
 
 
+def _handle_intero(did: str, rkey: str, cid: str, text: str) -> None:
+    """Process a post for the Interoception feed (prefilter → binary classifier)."""
+    if not passes_intero_prefilter(text):
+        return
+
+    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
+
+    if not classify_intero(text):
+        logger.debug("Intero rejected (classifier): %s", uri)
+        return
+
+    InteroPost.insert(uri=uri, cid=cid).on_conflict_ignore().execute()
+    logger.info("Intero approved: %s — %.80s", uri, text)
+
+
 def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     """Process a new post through the filter pipeline."""
     # English only
@@ -99,6 +118,10 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     # Signal feed: check followed accounts (runs before NeuroBrain filters)
     if SIGNAL_FEED_URI:
         _handle_signal(did, rkey, cid, text)
+
+    # Interoception feed: prefilter only, no classifier
+    if INTERO_FEED_URI:
+        _handle_intero(did, rkey, cid, text)
 
     # Skip bot-like posts: just a title/header with no real content
     # e.g. 'Feed: "Neuroscience News"\nPublished on Friday, ...'

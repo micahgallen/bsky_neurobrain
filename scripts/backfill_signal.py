@@ -42,7 +42,7 @@ def backfill(hours=1):
 
     for i, did in enumerate(follows, 1):
         try:
-            resp = client.get_author_feed(did, limit=30)
+            resp = client.get_author_feed(did, filter="posts_no_replies", limit=30)
             time.sleep(REQUEST_INTERVAL)
         except Exception:
             logger.debug("Failed to fetch feed for %s", did)
@@ -53,6 +53,10 @@ def backfill(hours=1):
         for item in resp.feed:
             post = item.post
             record = post.record
+
+            # Skip reposts/quotes from other authors — only the followed account's own posts
+            if post.author.did != did:
+                continue
 
             # Skip non-English
             langs = getattr(record, "langs", None) or []

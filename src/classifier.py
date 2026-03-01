@@ -73,6 +73,28 @@ Answer NO if the post is about personal life, science, art, sports, \
 hobbies, work, humor, or other non-political topics.
 Reply with only YES or NO."""
 
+_PROMPT_INTERO = """\
+You are a model that identifies first-person descriptions of interoceptive experiences in text.
+Interoception refers to the sense of the internal state of the body, including sensations like:
+- Heartbeat/pulse awareness
+- Breathing sensations
+- Nausea/stomach sensations
+- Temperature (hot/cold)
+- Bladder/urination urge
+- Pain/discomfort
+- Fatigue/sleepiness/energy
+- Dizziness/balance
+- Hunger/thirst
+- Muscle tension
+
+Classify 1 if the person is describing their OWN bodily sensation in first person (e.g., "my heart is racing", "I feel nauseous", "my hands are trembling").
+Classify 0 if:
+- They are describing someone else's experience
+- It is a general/abstract statement about body sensations
+- It is medical advice, a news article, or scientific discussion
+- It is sexual or pornographic content
+Respond only with 1 or 0."""
+
 _PROMPTS = {
     "v1": _PROMPT_V1,
     "v2": _PROMPT_V2,
@@ -169,4 +191,34 @@ def classify_politics(text: str) -> bool:
         return answer.startswith("YES")
     except Exception:
         logger.exception("Politics classification failed")
+        return False
+
+
+def classify_intero(text: str) -> bool:
+    """Return True if the post describes an interoceptive experience."""
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+                    {"role": "system", "content": _PROMPT_INTERO},
+                    {"role": "user", "content": text},
+                ],
+                "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                    "num_predict": 5,
+                },
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        answer = resp.json().get("message", {}).get("content", "").strip()
+        return answer.startswith("1")
+    except Exception:
+        logger.exception("Intero classification failed")
         return False
