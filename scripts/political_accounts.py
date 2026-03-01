@@ -70,13 +70,9 @@ def main():
     print()
     for i, (did, handle, name, count) in enumerate(accounts, 1):
         try:
-            # Find the follow record to delete
-            follows_resp = client.get_follows(client.me.did, limit=1)
-            # Use the API to unfollow by DID
             profile = client.get_profile(did)
             if profile.viewer and profile.viewer.following:
-                rkey = profile.viewer.following.split("/")[-1]
-                client.delete_follow(rkey)
+                client.delete_follow(profile.viewer.following)
                 print(f"  [{i}/{len(accounts)}] Unfollowed @{handle} ({count} political posts)")
             else:
                 print(f"  [{i}/{len(accounts)}] Already not following @{handle}")
