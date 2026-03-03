@@ -1,6 +1,6 @@
 # NeuroBrain
 
-A custom Bluesky feed that surfaces high-signal cognitive science posts using a locally-hosted LLM for classification.
+A custom Bluesky feed that surfaces high-quality neuroscience and cognitive science posts using a real-time AI pipeline. The entire firehose (~500 posts/sec) is filtered down to a handful of expert-level science discussions per hour — no politics, no pop-sci, no noise.
 
 **[View the feed on Bluesky](https://bsky.app/profile/micahgallen.com/feed/neurobrain)**
 
@@ -19,92 +19,86 @@ Posts about politics, pop psychology, self-help, crypto, and off-topic noise are
 
 ```
 Bluesky Firehose (~500 posts/sec)
-        |
-        v
-  Jetstream WebSocket (English posts only)
-        |
-        v
-  Keyword Pre-Filter (regex, ~95% rejected)
-        |
-        v
-  Ollama / Qwen 2.5 3B (binary classification, ~170ms on GPU)
-        |
-        v
-  SQLite (approved post URIs)
-        |
-        v
-  Flask API --> Bluesky app
+    │
+    ▼
+Jetstream WebSocket
+    │  English-only filter, min length, emoji/bot rejection
+    │
+    ▼
+Keyword Prefilter (~0ms, ~95% rejected)
+    │  312 inclusion terms across 6 domains
+    │  Exclusion terms block politics, crypto, pseudoscience
+    │  Science hashtags (#neuroscience, #cogsci, etc.) bypass keywords
+    │
+    ▼
+LLM Classifier (~170ms on GPU)
+    │  Ollama + Qwen 2.5 3B — quality score 1-5
+    │  Score ≥ 3 accepted into feed
+    │
+    ▼
+SQLite + Engagement Tracking
+    │  Post URIs stored with quality scores
+    │  Likes, reposts, replies, quotes fetched every 5 min
+    │
+    ▼
+Feed Ranking Algorithm
+    │  Quality tiers (score 3/4/5) with engagement + time decay
+    │
+    ▼
+Flask API → Bluesky App
 ```
 
-1. A WebSocket consumer connects to Bluesky's Jetstream firehose and receives every new post in real time.
-2. A keyword pre-filter does a fast regex scan against ~150 science terms. Posts without any matches are discarded immediately.
-3. Posts that pass the pre-filter are sent to a Qwen 2.5 3B model running on Ollama for binary classification (RELEVANT / NOT_RELEVANT). The LLM distinguishes real research discussion from casual uses of science words.
-4. Approved posts are stored in SQLite and served to the Bluesky app via a Flask API.
+Each stage dramatically reduces volume before the next expensive operation. The prefilter is essentially free; only ~1-10 posts/sec reach the LLM.
 
-### Classification prompt
+### Three-stage filtering in detail
 
+**Stage 1: Prefilter** — A regex scan against 312 science terms organized by domain (neuroscience, psychology, philosophy of mind, linguistics, cognitive anthropology, methods) plus 918 terms from the Cognitive Atlas. An exclusion list blocks posts containing political, crypto, or pseudoscience terms. Posts with science-relevant hashtags (e.g., `#neuroscience`, `#cogsci`) bypass keyword matching but still go through the LLM.
+
+**Stage 2: LLM classifier** — Posts that pass the prefilter are scored 1-5 by a locally-hosted Qwen 2.5 3B model:
+
+| Score | Meaning |
+|-------|---------|
+| 5 | Shares or discusses specific research, papers, data, or findings |
+| 4 | Expert discussion: debates theories, critiques methods, shares domain insights |
+| 3 | Informed content with genuine substance about the brain or cognition |
+| 2 | Casual or superficial mention without depth |
+| 1 | Not relevant: general health, politics, non-science |
+
+Posts scoring 3+ are accepted. The classifier explicitly rejects general health science, clinical medicine, AI/ML (unless about biological cognition), and political content.
+
+**Stage 3: Engagement ranking** — Accepted posts are ranked by a composite score combining quality and engagement within quality tiers. A score-3 post can never outrank a score-4 post regardless of engagement — quality is king.
+
+### Feed ranking algorithms
+
+Two ranking algorithms run in parallel on the same data:
+
+**NeuroBrain (v1)** — Linear time decay:
 ```
-You are a classifier for a cognitive science feed. Classify the following
-social media post as RELEVANT or NOT_RELEVANT.
-
-RELEVANT posts are about:
-- Neuroscience (brain research, neural mechanisms, neuroimaging, neurotransmitters)
-- Psychology (cognition, perception, memory, attention, learning, decision-making)
-- Cognitive anthropology (cultural cognition, cognitive ecology)
-- Philosophy of mind (consciousness, qualia, mental representation, free will)
-- Linguistics (syntax, semantics, language acquisition, psycholinguistics)
-- Cognitive science methods (fMRI, EEG, behavioral experiments, computational models)
-
-NOT_RELEVANT posts include:
-- Political opinions or policy debates, even if they mention science
-- Pop psychology or self-help without scientific substance
-- Science-adjacent content that is primarily social commentary
-- Posts about AI/ML unless explicitly about biological cognition or brain-inspired models
-- Clinical/medical advice (psychiatry prescriptions, therapy recommendations)
-- Posts primarily promoting a product, event, or personal brand
-- Casual or figurative uses of "brain", "mind", "memory", or "free will"
-- Personal anecdotes about thinking or feeling, even if using scientific vocabulary
-- Motivational or poetic statements about cognition without scientific content
-
-Respond with ONLY "RELEVANT" or "NOT_RELEVANT". Nothing else.
-
-Post: "{post_text}"
-Classification:
+engagement = likes + reposts×3 + replies×2 + quotes×4
+bonus = min(log(1 + engagement) × 0.2, 0.95)
+penalty = min(age_hours / 120, 0.5)
+score = quality + bonus - penalty
 ```
 
-### Keyword pre-filter
+**NeuroBrain v2** — Exponential decay with quality floor:
+```
+decay = exp(-ln(2) × age_hours / 8)          # 8-hour half-life
+bonus = min(log(1 + engagement) × 0.2, 0.95) × decay
+residual = 0.1 × max(0, quality - 3) × max(0, 1 - age_hours/48)
+score = quality + bonus + residual
+```
 
-Posts must contain at least one inclusion keyword and no exclusion keywords to reach the LLM. All matching is case-insensitive with word boundaries.
-
-**Inclusion keywords:**
-
-| Category | Keywords |
-|----------|----------|
-| Neuroscience | neurosci*, neuron*, synaps*, cortex, cortical, hippocampus, hippocampal, amygdala, prefrontal, cerebellum, dopamine, serotonin, norepinephrine, GABA, glutamate, neuroplasticity, axon*, dendrit*, glia*, astrocyte*, microglia, myelin, fMRI, EEG, MEG, neuroimaging, brain scan, connectome, tractography, optogenetics, electrophysiology, neurotransmitter*, neuropeptide*, neural circuit*, brain region*, thalamus, basal ganglia, striatum, brainstem, white matter, gray matter, blood-brain barrier, neuro*, CNS, PNS |
-| Psychology | cognition, cognitive, perception, working memory, long-term memory, episodic memory, semantic memory, procedural memory, executive function, decision making, metacognition, cognitive load, priming, implicit memory, explicit memory, cognitive bias, heuristic*, psychophysics, reaction time, signal detection, mental model*, schema, chunking, interference, encoding, retrieval, habituation, sensitization, conditioning, reinforcement, developmental psych*, cognitive development, Piaget, Vygotsky, theory of mind, false belief, joint attention, psycholinguistic*, visual perception, auditory perception, multisensory, crossmodal |
-| Philosophy of mind | consciousness, qualia, phenomenal, hard problem, explanatory gap, intentionality, mental representation, functionalism, dualism, physicalism, panpsychism, integrated information, global workspace, higher-order thought, neural correlates of consciousness, NCC, determinism, mental causation, supervenience, philosophy of mind, phenomenology, embodied cognition, enactivism, extended mind, predictive processing, Bayesian brain, active inference, free energy principle |
-| Linguistics | syntax, morphology, phonology, phonetics, semantics, pragmatics, linguistic*, language acquisition, universal grammar, Chomsky, minimalism, generative grammar, neurolinguistic*, Broca, Wernicke, aphasia, dyslexia, bilingual*, multilingual*, speech perception, speech production, prosody, discourse, language processing, garden path, parsing, lexical access, word recognition, sentence processing, language comprehension |
-| Cognitive anthropology | cognitive anthropology, cultural cognition, ethnoscience, folk taxonomy, cognitive ecology, distributed cognition, situated cognition, cultural evolution, cognitive niche, cumulative culture, social learning, imitation, emulation, cultural transmission, cognitive archaeology |
-| Methods | peer-reviewed, preprint, study finds, researchers found, meta-analysis, replication, effect size, statistical significance, p-value, confidence interval, sample size, longitudinal, randomized controlled, double-blind, neuropsychology, computational model*, simulation, cognitive science, cogsci, behavioral experiment*, eye tracking, pupillometry, TMS, tDCS, lesion study, case study, single-cell recording |
-
-**Exclusion keywords** (reject even if inclusion keywords match):
-
-| Category | Keywords |
-|----------|----------|
-| Politics | Trump, Biden, Democrat*, Republican*, GOP, MAGA, election, vote, politician*, Congress, Senate, legislation, partisan, liberal, conservative, left-wing, right-wing, woke, anti-woke, cancel culture, culture war, immigration policy, gun control, abortion |
-| Crypto | crypto, bitcoin, NFT, stonks, meme stock* |
-| Pseudoscience | astrology, horoscope, zodiac, manifesting |
-| Sports | sports score*, fantasy league*, game tonight |
+v2 lets fresh posts break through without needing to out-engage older content. Engagement value decays exponentially so a 16-hour-old post with 10 likes only barely leads a fresh post. Score 4-5 posts get a small residual bonus that fades over 48 hours.
 
 ## Tech stack
 
 | Component | Technology |
 |-----------|------------|
 | Language | Python 3.12 |
-| Firehose | Jetstream (WebSocket, JSON) |
-| Pre-filter | Regex keyword matching |
-| LLM | Ollama + Qwen 2.5 3B (Q4_K_M) via ROCm |
-| Database | SQLite via Peewee ORM |
+| Firehose | Jetstream WebSocket |
+| Prefilter | Regex keyword matching (312 terms + 918 Cognitive Atlas concepts) |
+| LLM | Ollama + Qwen 2.5 3B via ROCm (AMD GPU) |
+| Database | SQLite (WAL mode) via Peewee ORM |
 | Web server | Flask |
 | Tunnel | Cloudflare Tunnel |
 | Process manager | systemd |
@@ -113,22 +107,26 @@ Posts must contain at least one inclusion keyword and no exclusion keywords to r
 
 ```
 src/
-  config.py         # Environment variable loading
-  database.py       # SQLite models (Post, SubscriptionState, ClassificationLog)
-  prefilter.py      # Keyword pre-filter (~150 inclusion terms, exclusion terms)
-  classifier.py     # Ollama LLM classifier (binary RELEVANT/NOT_RELEVANT)
-  consumer.py       # Jetstream WebSocket consumer with auto-reconnect
-  server.py         # Flask API (3 XRPC endpoints)
+  config.py             # Environment variable loading
+  database.py           # SQLite models + automatic schema migration
+  prefilter.py          # Keyword prefilter (312 terms + exclusions)
+  classifier.py         # Ollama LLM classifier (quality score 1-5)
+  consumer.py           # Jetstream WebSocket consumer with auto-reconnect
+  engagement.py         # Background engagement metric updater (v1 + v2 scoring)
+  server.py             # Flask API (3 XRPC endpoints)
   algos/
-    neurobrain.py   # Feed query + cursor pagination
+    neurobrain.py       # v1 feed ranking (linear decay)
+    neurobrain_v2.py    # v2 feed ranking (exponential decay)
 scripts/
-  publish_feed.py   # One-time feed registration with Bluesky
-  unpublish_feed.py # Feed removal
-  analyze_classifications.py  # Classification log analysis
+  publish_feed.py               # Register NeuroBrain feed with Bluesky
+  publish_neurobrain_v2_feed.py # Register v2 feed with Bluesky
+  unpublish_feed.py             # Remove feed from Bluesky
+  analyze_classifications.py    # Classification log analysis
 deploy/
-  neurobrain-server.service   # systemd unit for Flask
-  neurobrain-consumer.service # systemd unit for Jetstream consumer
-  neurobrain-tunnel.service   # systemd unit for Cloudflare tunnel
+  neurobrain-server.service     # systemd unit for Flask
+  neurobrain-consumer.service   # systemd unit for Jetstream consumer
+  neurobrain-engagement.service # systemd unit for engagement updater
+  neurobrain-tunnel.service     # systemd unit for Cloudflare tunnel
 ```
 
 ## Setup
@@ -145,21 +143,42 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your Bluesky handle, app password, hostname, etc.
 
-# Pull the LLM model
+# Install and pull the LLM model
+# See https://ollama.com for installation instructions
 ollama pull qwen2.5:3b
 
-# Initialize database and run
+# Initialize database and start the pipeline
 python -c "from src.database import init_db; init_db()"
-python -m src.consumer &    # Start ingesting posts
+python -m src.consumer &                           # Ingest posts
+python -c "from src.engagement import main; main()" &  # Update engagement
 python -c "from src.server import app; app.run(host='0.0.0.0', port=5000)"
 
-# Register the feed with Bluesky
+# Register the feed with Bluesky (once)
 PYTHONPATH=. python scripts/publish_feed.py
+# Copy the printed FEED_URI into your .env file
 ```
 
 ## Deployment
 
-The `deploy/` directory contains systemd service files for running the server, consumer, and Cloudflare tunnel as persistent services. See `docs/PROJECT_PLAN.md` for detailed deployment instructions.
+The `deploy/` directory contains systemd service files for running the three processes and a Cloudflare tunnel as persistent services. Copy them to `/etc/systemd/system/`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now neurobrain-server neurobrain-consumer neurobrain-engagement neurobrain-tunnel
+```
+
+The consumer depends on `ollama.service` and will wait for the LLM to be available before starting.
+
+## Architecture notes
+
+- **Three independent processes** — The consumer, engagement updater, and server share no in-process state. They communicate through SQLite with WAL mode for concurrent read/write access.
+- **Consumer resumes from cursor** — On restart, the consumer picks up exactly where it left off via a persisted Jetstream cursor. No posts are re-processed.
+- **Quality tiers are inviolable** — The engagement bonus is capped below 1.0, so it can only reorder posts within the same quality tier, never promote a lower-quality post above a higher-quality one.
+- **Hashtag bypass** — Posts with science-relevant hashtags skip the keyword prefilter but still go through the LLM classifier. This catches posts by scientists who don't happen to use the right vocabulary.
+
+## Want to build your own?
+
+See **[HOWTO.md](HOWTO.md)** for a step-by-step guide to creating your own AI-curated Bluesky feed for any topic.
 
 ## License
 
