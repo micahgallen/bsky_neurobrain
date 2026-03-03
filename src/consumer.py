@@ -70,6 +70,13 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     if len(text) < 30:
         return
 
+    # Skip posts that are tagged "en" but are primarily non-Latin script
+    # (CJK, Arabic, Cyrillic, etc.) — catches mistagged multilingual posts
+    non_ascii_letters = sum(1 for ch in text if ch.isalpha() and ord(ch) > 0x024F)
+    ascii_letters = sum(1 for ch in text if ch.isalpha() and ord(ch) <= 0x024F)
+    if ascii_letters > 0 and non_ascii_letters / (ascii_letters + non_ascii_letters) > 0.5:
+        return
+
     # Skip bot-like posts: just a title/header with no real content
     # e.g. 'Feed: "Neuroscience News"\nPublished on Friday, ...'
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
