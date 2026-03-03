@@ -24,6 +24,16 @@ def _get_client() -> Client:
     return client
 
 
+def _weighted_engagement(
+    like_count: int,
+    repost_count: int,
+    reply_count: int,
+    quote_count: int,
+) -> int:
+    """Compute weighted engagement total."""
+    return like_count + (repost_count * 3) + (reply_count * 2) + (quote_count * 4)
+
+
 def _compute_feed_score(
     quality_score: int,
     like_count: int,
@@ -41,12 +51,36 @@ def _compute_feed_score(
     Score bands: quality_score forms the integer part, engagement fills
     the fractional part (0.0 to ~0.9), time decay subtracts a small amount.
     """
-    weighted = like_count + (repost_count * 3) + (reply_count * 2) + (quote_count * 4)
+    weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
     # Engagement bonus capped at ~0.9 so it never crosses quality tiers
     # log1p(100) ≈ 4.6, * 0.2 = 0.92 — even 100 weighted engagement stays < 1.0
     engagement_bonus = min(math.log1p(weighted) * 0.2, 0.95)
     time_penalty = min(age_hours / 120, 0.5)
     return quality_score + engagement_bonus - time_penalty
+
+
+def _compute_feed_score_v2(
+    quality_score: int,
+    like_count: int,
+    repost_count: int,
+    reply_count: int,
+    quote_count: int,
+    age_hours: float,
+) -> float:
+    """Compute feed score with exponential engagement decay + quality floor.
+
+    Engagement decays with an 8-hour half-life so fresh content can break
+    through without needing to accumulate engagement first. Exceptional
+    content (score 4-5) gets a small residual bonus that fades over 48h.
+    Quality tiers are still fully preserved.
+    """
+    weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
+    half_life = 8  # hours
+    decay = math.exp(-math.log(2) * age_hours / half_life)
+    engagement_bonus = min(math.log1p(weighted) * 0.2, 0.95) * decay
+    # Quality floor: score-5 gets +0.2, score-4 gets +0.1, fading over 48h
+    quality_residual = 0.1 * max(0, quality_score - 3) * max(0, 1 - age_hours / 48)
+    return quality_score + engagement_bonus + quality_residual
 
 
 def update_engagement() -> int:
@@ -92,22 +126,26 @@ def update_engagement() -> int:
 
             age_hours = max((now - post.indexed_at).total_seconds() / 3600, 0.01)
 
-            feed_score = _compute_feed_score(
-                quality_score=post.quality_score,
+            engagement_kwargs = dict(
                 like_count=pv.like_count or 0,
                 repost_count=pv.repost_count or 0,
                 reply_count=pv.reply_count or 0,
                 quote_count=pv.quote_count or 0,
+            )
+            score_kwargs = dict(
+                quality_score=post.quality_score,
                 age_hours=age_hours,
+                **engagement_kwargs,
             )
 
+            feed_score = _compute_feed_score(**score_kwargs)
+            feed_score_v2 = _compute_feed_score_v2(**score_kwargs)
+
             Post.update(
-                like_count=pv.like_count or 0,
-                repost_count=pv.repost_count or 0,
-                reply_count=pv.reply_count or 0,
-                quote_count=pv.quote_count or 0,
                 engagement_updated_at=now,
                 feed_score=feed_score,
+                feed_score_v2=feed_score_v2,
+                **engagement_kwargs,
             ).where(Post.id == post.id).execute()
 
             updated += 1

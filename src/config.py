@@ -11,8 +11,7 @@ SERVICE_DID = os.environ.get("SERVICE_DID", "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 CLASSIFIER_VERSION = os.environ.get("CLASSIFIER_VERSION", "v2")  # "v1" or "v2"
-SIGNAL_FEED_URI = os.environ.get("SIGNAL_FEED_URI", "")
-INTERO_FEED_URI = os.environ.get("INTERO_FEED_URI", "")
+NEUROBRAIN_V2_FEED_URI = os.environ.get("NEUROBRAIN_V2_FEED_URI", "")
 
 if not SERVICE_DID and HOSTNAME:
     SERVICE_DID = f"did:web:{HOSTNAME}"

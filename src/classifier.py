@@ -43,57 +43,32 @@ Respond with ONLY a single digit: 1, 2, 3, 4, or 5. Nothing else."""
 
 # v2: Expert science conversation — interesting and apolitical
 _PROMPT_V2 = """\
-You are a classifier for a science feed. Is this post an interesting, \
-expert-level discussion about science?
+You are a classifier for a neuroscience and cognitive science feed. Is this \
+post an interesting, expert-level discussion about neuroscience or cognitive science?
+
+RELEVANT fields:
+- Neuroscience (brain research, neural mechanisms, neuroimaging, neurotransmitters)
+- Cognitive science (cognition, perception, memory, attention, learning, decision-making)
+- Psychology (experimental, cognitive, developmental, behavioral)
+- Philosophy of mind (consciousness, qualia, mental representation)
+- Linguistics (psycholinguistics, language processing, syntax, semantics)
+- Cognitive anthropology (cultural cognition, cognitive ecology)
 
 Score 1-5:
-5 - Shares or discusses specific research, papers, data, or scientific findings
-4 - Expert scientific discussion: debates theories, critiques methods, or shares insights
-3 - Informed science content with genuine substance
-2 - Casual or superficial mention of science without depth
-1 - Not science: political, personal, promotional, self-help, or metaphorical
+5 - Shares or discusses specific research, papers, data, or findings in these fields
+4 - Expert discussion: debates theories, critiques methods, or shares domain insights
+3 - Informed content with genuine substance about the brain or cognition
+2 - Casual or superficial mention without depth
+1 - Not relevant: general health/medicine, biology, chemistry, physics, or non-science
 
-Score 4-5 when the author shows real scientific knowledge — referencing \
-specific studies, using technical terms naturally, or engaging with methodology.
-
-ALWAYS score 1 if the post is political in any way, even if it mentions science.
+ALWAYS score 1 for:
+- General health science, epidemiology, oncology, cardiology, immunology, genetics
+- Clinical medicine, medical advice, therapy recommendations
+- Political content, even if it mentions science
+- AI/ML unless explicitly about biological cognition or brain-inspired models
+- Personal anecdotes, self-help, pop psychology without scientific substance
 
 Respond with ONLY a single digit: 1, 2, 3, 4, or 5."""
-
-_PROMPT_POLITICS = """\
-Is this post political? Answer YES if it is about ANY of these:
-- Politicians, political parties, elections, voting
-- Government policy, legislation, regulations
-- War, military action, geopolitical conflict
-- Political commentary, activism, or protest
-- Culture war topics, partisan debate
-- Authoritarianism, dictators, political violence
-- News about government actions or political events
-Answer NO if the post is about personal life, science, art, sports, \
-hobbies, work, humor, or other non-political topics.
-Reply with only YES or NO."""
-
-_PROMPT_INTERO = """\
-You are a model that identifies first-person descriptions of interoceptive experiences in text.
-Interoception refers to the sense of the internal state of the body, including sensations like:
-- Heartbeat/pulse awareness
-- Breathing sensations
-- Nausea/stomach sensations
-- Temperature (hot/cold)
-- Bladder/urination urge
-- Pain/discomfort
-- Fatigue/sleepiness/energy
-- Dizziness/balance
-- Hunger/thirst
-- Muscle tension
-
-Classify 1 if the person is describing their OWN bodily sensation in first person (e.g., "my heart is racing", "I feel nauseous", "my hands are trembling").
-Classify 0 if:
-- They are describing someone else's experience
-- It is a general/abstract statement about body sensations
-- It is medical advice, a news article, or scientific discussion
-- It is sexual or pornographic content
-Respond only with 1 or 0."""
 
 _PROMPTS = {
     "v1": _PROMPT_V1,
@@ -164,61 +139,3 @@ def classify_post(text: str, uri: str = "") -> int:
     return score
 
 
-def classify_politics(text: str) -> bool:
-    """Return True if the post is political (should be dropped)."""
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": _PROMPT_POLITICS},
-                    {"role": "user", "content": text},
-                ],
-                "stream": False,
-                "think": False,
-                "options": {
-                    "temperature": 0.7,
-                    "top_p": 0.8,
-                    "top_k": 20,
-                    "num_predict": 5,
-                },
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        answer = resp.json().get("message", {}).get("content", "").strip().upper()
-        return answer.startswith("YES")
-    except Exception:
-        logger.exception("Politics classification failed")
-        return False
-
-
-def classify_intero(text: str) -> bool:
-    """Return True if the post describes an interoceptive experience."""
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": _PROMPT_INTERO},
-                    {"role": "user", "content": text},
-                ],
-                "stream": False,
-                "think": False,
-                "options": {
-                    "temperature": 0.7,
-                    "top_p": 0.8,
-                    "top_k": 20,
-                    "num_predict": 5,
-                },
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        answer = resp.json().get("message", {}).get("content", "").strip()
-        return answer.startswith("1")
-    except Exception:
-        logger.exception("Intero classification failed")
-        return False

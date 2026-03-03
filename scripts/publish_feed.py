@@ -13,8 +13,8 @@ def main():
         did=feed_did,
         display_name="NeuroBrain",
         description=(
-            "Curated cognitive science feed \u2014 neuroscience, psychology, "
-            "philosophy of mind, linguistics. Pure science, no politics."
+            "Neuroscience and cognitive science, filtered and ranked by AI. "
+            "Papers, expert discussion, methods debates. No politics, no pop-sci."
         ),
         created_at=client.get_current_time_iso(),
     )

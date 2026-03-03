@@ -16,8 +16,7 @@ venv/bin/python -c "from src.engagement import main; main()"
 
 # Register/unregister feeds with Bluesky
 PYTHONPATH=. venv/bin/python scripts/publish_feed.py
-PYTHONPATH=. venv/bin/python scripts/publish_signal_feed.py
-PYTHONPATH=. venv/bin/python scripts/publish_intero_feed.py
+PYTHONPATH=. venv/bin/python scripts/publish_neurobrain_v2_feed.py
 PYTHONPATH=. venv/bin/python scripts/unpublish_feed.py
 
 # Analyze classification logs
@@ -26,20 +25,8 @@ venv/bin/python scripts/analyze_classifications.py
 # Test prefilter
 venv/bin/python -c "from src.prefilter import passes_prefilter; print(passes_prefilter('fMRI study on hippocampal memory'))"
 
-# Test intero prefilter
-venv/bin/python -c "from src.intero_prefilter import passes_intero_prefilter; print(passes_intero_prefilter('my chest feels tight and my heart is racing'))"
-
 # Test classifier (requires Ollama running)
 venv/bin/python -c "from src.classifier import classify_post; print(classify_post('dopamine modulates working memory'))"
-
-# Test politics classifier
-venv/bin/python -c "from src.classifier import classify_politics; print(classify_politics('Trump is ruining the country'))"
-
-# Test intero classifier
-venv/bin/python -c "from src.classifier import classify_intero; print(classify_intero('my heart is pounding and I feel dizzy'))"
-
-# Test follow list loading
-venv/bin/python -c "from src.follows import load_follows; from src.config import HANDLE, PASSWORD; print(f'{len(load_follows(HANDLE, PASSWORD))} follows')"
 
 # Manage production services
 sudo systemctl restart neurobrain-server neurobrain-consumer neurobrain-engagement neurobrain-tunnel
@@ -67,55 +54,23 @@ Jetstream WebSocket (~500 posts/sec)
 
 Each stage dramatically reduces volume before the next expensive operation. The prefilter is essentially free; only ~1-10 posts/sec reach the LLM.
 
-### Signal feed (politics-free following feed)
+### Feed ranking
 
-Parallel path in the same consumer process:
+Two ranking algorithms run in parallel on the same data, served as separate feeds:
 
-```
-Jetstream (~500 posts/sec)
-    → consumer.py: Is author in follow set? (O(1) set lookup) — no → skip
-    → consumer.py: English filter, min length
-    → classifier.py: classify_politics() — YES/NO via Ollama (~140ms)
-        - Political → drop
-    → database.py: store in SignalPost table (chronological, no scoring)
-    → algos/signal.py: serve chronological feed via 2-part cursor
-```
+- **NeuroBrain (v1)**: `feed_score = quality + engagement_bonus - linear_time_penalty`. Gentle linear decay (age/120, capped at 0.5). Engagement dominates for 48+ hours.
+- **NeuroBrain v2**: `feed_score_v2 = quality + engagement_bonus * exp_decay + quality_residual`. Exponential decay (8-hour half-life) on engagement so fresh posts break through. Score 4-5 posts get a small residual bonus fading over 48 hours.
 
-Follow set is loaded at startup and refreshed every 30 minutes. A post can appear in multiple feeds.
-
-### Interoception feed (first-person body sensation reports)
-
-Parallel path in the same consumer process:
-
-```
-Jetstream (~500 posts/sec)
-    → consumer.py: English filter, min length
-    → intero_prefilter.py: two-tier dictionary matching (~0ms)
-        - NSFW exclusion filter (rejects explicit content)
-        - Tier 1: scientific anchors + multi-word terms + phrases (single match passes)
-          e.g., "interoception", "chest pressure", "heart racing", "butterflies in stomach"
-        - Tier 2: single-word terms need 2+ matches from different domains
-          e.g., "nauseous" (gastrointestinal) + "shaky" (vestibular)
-    → classifier.py: classify_intero() — binary 1/0 via Ollama (~140ms)
-        - Must be first-person report of own bodily sensation
-        - Rejects third-person, medical advice, news, NSFW
-    → database.py: store in InteroPost table (chronological, no scoring)
-    → algos/intero.py: serve chronological feed via 2-part cursor
-```
-
-Dictionary: `data/interoception_dictionary.json` — 1,615 terms across 10 body-sensation domains (cardiac, respiratory, gastrointestinal, thermoregulatory, vestibular, pain, fatigue, hunger_thirst, urogenital, somatosensory).
+Both preserve quality tiers — a score-3 post can never outrank a score-4 post regardless of engagement.
 
 ### Key module relationships
 
-- **`consumer.py`** is the pipeline orchestrator. It runs NeuroBrain, Signal, and Intero paths. For NeuroBrain: extracts hashtags, calls `prefilter.passes_prefilter()` and `prefilter.check_hashtags()`, then `classifier.classify_post()`. For Signal: checks follow set membership, calls `classifier.classify_politics()`. For Intero: calls `intero_prefilter.passes_intero_prefilter()`, then `classifier.classify_intero()`. Writes to `Post`, `SignalPost`, `InteroPost`, and `SubscriptionState` tables.
-- **`classifier.py`** calls Ollama's HTTP API (`POST /api/chat`). `classify_post()` returns a quality score 1-5 and logs to `ClassificationLog`. `classify_politics()` returns bool (YES/NO). `classify_intero()` returns bool (1/0 — first-person interoceptive experience).
-- **`engagement.py`** runs as a separate process. Every 5 minutes it fetches engagement metrics (likes, reposts, replies, quotes) from the Bluesky API for posts from the last 48 hours and computes a composite `feed_score`.
+- **`consumer.py`** is the pipeline orchestrator. Extracts hashtags, calls `prefilter.passes_prefilter()` and `prefilter.check_hashtags()`, then `classifier.classify_post()`. Writes to `Post` and `SubscriptionState` tables.
+- **`classifier.py`** calls Ollama's HTTP API (`POST /api/chat`). `classify_post()` returns a quality score 1-5 and logs to `ClassificationLog`.
+- **`engagement.py`** runs as a separate process. Every 5 minutes it fetches engagement metrics (likes, reposts, replies, quotes) from the Bluesky API for posts from the last 48 hours and computes both `feed_score` (v1) and `feed_score_v2`.
 - **`server.py`** is independent of the consumer. It reads from the `Post` table via the algo handler registered in `src/algos/__init__.py`.
 - **`algos/neurobrain.py`** queries posts by `feed_score DESC, indexed_at DESC` with cursor pagination (`{score_x100}::{timestamp_ms}::{cid}` format, with legacy 2-part cursor support).
-- **`algos/signal.py`** queries `SignalPost` by `indexed_at DESC` with simple 2-part cursor (`{timestamp_ms}::{cid}`).
-- **`algos/intero.py`** queries `InteroPost` by `indexed_at DESC` with simple 2-part cursor (`{timestamp_ms}::{cid}`).
-- **`intero_prefilter.py`** loads `data/interoception_dictionary.json` at import time, builds tier 1 regex (anchors + multi-word terms + phrases) and per-domain tier 2 regexes (single-word terms). Also has NSFW exclusion regex.
-- **`follows.py`** fetches the user's follow list via `atproto` client, returns a `set[str]` of DIDs for O(1) lookup.
+- **`algos/neurobrain_v2.py`** queries posts by `feed_score_v2 DESC, indexed_at DESC` with the same cursor format.
 - **`config.py`** loads `.env` via python-dotenv. `SERVICE_DID` auto-derives from `HOSTNAME` as `did:web:{HOSTNAME}` if not set explicitly.
 
 ### Three independent processes
@@ -136,9 +91,7 @@ Ollama systemd override: `/etc/systemd/system/ollama.service.d/override.conf` (s
 
 ## Constraints
 
-- **NeuroBrain cursor format is `{score_x100}::{timestamp_ms}::{cid}`** — used by the NeuroBrain feed handler for keyset pagination. Legacy `{timestamp_ms}::{cid}` format also supported.
-- **Signal cursor format is `{timestamp_ms}::{cid}`** — simple chronological pagination.
-- **Intero cursor format is `{timestamp_ms}::{cid}`** — simple chronological pagination.
+- **NeuroBrain cursor format is `{score_x100}::{timestamp_ms}::{cid}`** — used by both NeuroBrain feed handlers for keyset pagination. Legacy `{timestamp_ms}::{cid}` format also supported.
 - **Scripts need `PYTHONPATH=.`** — `scripts/` files import from `src.*` but aren't inside the package.
 - **Ollama must be running** for the consumer to classify posts. Without it, posts that pass the prefilter get logged as ERROR and rejected.
 - **Consumer resumes from cursor** — `SubscriptionState` stores `time_us` (Unix microseconds). On restart, no posts are re-processed. Cursor is persisted every 50 messages.

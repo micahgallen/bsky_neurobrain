@@ -33,28 +33,12 @@ class Post(BaseModel):
     quote_count = IntegerField(default=0)
     engagement_updated_at = DateTimeField(null=True, default=None)
     feed_score = FloatField(default=3.0, index=True)
+    feed_score_v2 = FloatField(default=3.0, index=True)
 
 
 class SubscriptionState(BaseModel):
     service = CharField(unique=True)
     cursor = BigIntegerField()
-
-
-class SignalPost(BaseModel):
-    uri = CharField(unique=True, index=True)
-    cid = CharField()
-    indexed_at = DateTimeField(default=datetime.datetime.utcnow, index=True)
-
-
-class PoliticsLog(BaseModel):
-    did = CharField(index=True)
-    detected_at = DateTimeField(default=datetime.datetime.utcnow)
-
-
-class InteroPost(BaseModel):
-    uri = CharField(unique=True, index=True)
-    cid = CharField()
-    indexed_at = DateTimeField(default=datetime.datetime.utcnow, index=True)
 
 
 class ClassificationLog(BaseModel):
@@ -82,6 +66,7 @@ def _migrate_db():
         "quote_count": IntegerField(default=0),
         "engagement_updated_at": DateTimeField(null=True, default=None),
         "feed_score": FloatField(default=3.0),
+        "feed_score_v2": FloatField(default=3.0),
     }
     for col_name, col_field in new_post_cols.items():
         if col_name not in existing:
@@ -105,6 +90,7 @@ def _migrate_db():
     # only apply to new inserts, not existing rows)
     db.execute_sql("UPDATE post SET quality_score = 3 WHERE quality_score IS NULL")
     db.execute_sql("UPDATE post SET feed_score = 3.0 WHERE feed_score IS NULL")
+    db.execute_sql("UPDATE post SET feed_score_v2 = 3.0 WHERE feed_score_v2 IS NULL")
     db.execute_sql("UPDATE post SET like_count = 0 WHERE like_count IS NULL")
     db.execute_sql("UPDATE post SET repost_count = 0 WHERE repost_count IS NULL")
     db.execute_sql("UPDATE post SET reply_count = 0 WHERE reply_count IS NULL")
@@ -113,9 +99,12 @@ def _migrate_db():
     db.execute_sql(
         "CREATE INDEX IF NOT EXISTS post_feed_score ON post(feed_score)"
     )
+    db.execute_sql(
+        "CREATE INDEX IF NOT EXISTS post_feed_score_v2 ON post(feed_score_v2)"
+    )
 
 
 def init_db():
     db.connect(reuse_if_open=True)
-    db.create_tables([Post, SubscriptionState, ClassificationLog, SignalPost, PoliticsLog, InteroPost])
+    db.create_tables([Post, SubscriptionState, ClassificationLog])
     _migrate_db()

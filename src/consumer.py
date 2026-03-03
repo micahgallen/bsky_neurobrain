@@ -3,15 +3,12 @@ import json
 import logging
 import re
 import signal
-import time
 
 import websockets
 
-from src.config import HANDLE, PASSWORD, SIGNAL_FEED_URI, INTERO_FEED_URI
-from src.database import db, Post, SignalPost, InteroPost, PoliticsLog, SubscriptionState, init_db
+from src.database import db, Post, SubscriptionState, init_db
 from src.prefilter import passes_prefilter, check_hashtags
-from src.classifier import classify_post, classify_politics, classify_intero
-from src.intero_prefilter import passes_intero_prefilter
+from src.classifier import classify_post
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +19,6 @@ JETSTREAM_URL = (
 SERVICE_NAME = "jetstream"
 CURSOR_UPDATE_INTERVAL = 50  # Update cursor every N messages
 QUALITY_THRESHOLD = 3  # Minimum score to include in feed
-FOLLOW_REFRESH_INTERVAL = 1800  # Refresh follow list every 30 minutes
-
-# Follow set and last refresh time (module-level for access in _handle_create)
-_follow_set: set[str] = set()
-_follow_set_updated: float = 0
 
 
 def _get_cursor() -> int | None:
@@ -53,12 +45,6 @@ def _handle_delete(uri: str) -> None:
     deleted = Post.delete().where(Post.uri == uri).execute()
     if deleted:
         logger.info("Deleted post: %s", uri)
-    deleted_signal = SignalPost.delete().where(SignalPost.uri == uri).execute()
-    if deleted_signal:
-        logger.info("Deleted signal post: %s", uri)
-    deleted_intero = InteroPost.delete().where(InteroPost.uri == uri).execute()
-    if deleted_intero:
-        logger.info("Deleted intero post: %s", uri)
 
 
 def _extract_hashtags(record: dict) -> list[str]:
@@ -73,37 +59,6 @@ def _extract_hashtags(record: dict) -> list[str]:
     return tags
 
 
-def _handle_signal(did: str, rkey: str, cid: str, text: str) -> None:
-    """Process a post for the Signal feed (followed accounts, no politics)."""
-    if not _follow_set or did not in _follow_set:
-        return
-
-    if classify_politics(text):
-        uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-        logger.debug("Signal rejected (political): %s", uri)
-        PoliticsLog.create(did=did)
-        return
-
-    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-    SignalPost.insert(uri=uri, cid=cid).on_conflict_ignore().execute()
-    logger.info("Signal approved: %s — %.80s", uri, text)
-
-
-def _handle_intero(did: str, rkey: str, cid: str, text: str) -> None:
-    """Process a post for the Interoception feed (prefilter → binary classifier)."""
-    if not passes_intero_prefilter(text):
-        return
-
-    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-
-    if not classify_intero(text):
-        logger.debug("Intero rejected (classifier): %s", uri)
-        return
-
-    InteroPost.insert(uri=uri, cid=cid).on_conflict_ignore().execute()
-    logger.info("Intero approved: %s — %.80s", uri, text)
-
-
 def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     """Process a new post through the filter pipeline."""
     # English only
@@ -114,14 +69,6 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     text = record.get("text", "")
     if len(text) < 30:
         return
-
-    # Signal feed: check followed accounts (runs before NeuroBrain filters)
-    if SIGNAL_FEED_URI:
-        _handle_signal(did, rkey, cid, text)
-
-    # Interoception feed: prefilter only, no classifier
-    if INTERO_FEED_URI:
-        _handle_intero(did, rkey, cid, text)
 
     # Skip bot-like posts: just a title/header with no real content
     # e.g. 'Feed: "Neuroscience News"\nPublished on Friday, ...'
@@ -173,31 +120,15 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
 
     # Store approved post with quality score; initial feed_score = quality_score
     Post.insert(
-        uri=uri, cid=cid, quality_score=score, feed_score=float(score)
+        uri=uri, cid=cid, quality_score=score,
+        feed_score=float(score), feed_score_v2=float(score),
     ).on_conflict_ignore().execute()
     logger.info("Approved (score=%d): %s", score, uri)
-
-
-def _refresh_follows() -> None:
-    """Load or refresh the follow set if needed."""
-    global _follow_set, _follow_set_updated
-    if not SIGNAL_FEED_URI or not HANDLE or not PASSWORD:
-        return
-    now = time.monotonic()
-    if now - _follow_set_updated < FOLLOW_REFRESH_INTERVAL and _follow_set:
-        return
-    try:
-        from src.follows import load_follows
-        _follow_set = load_follows(HANDLE, PASSWORD)
-        _follow_set_updated = now
-    except Exception:
-        logger.exception("Failed to refresh follow set")
 
 
 async def _consume() -> None:
     """Connect to Jetstream and process messages."""
     init_db()
-    _refresh_follows()
 
     cursor = _get_cursor()
     url = JETSTREAM_URL
@@ -221,7 +152,6 @@ async def _consume() -> None:
                 msg_count += 1
                 if msg_count % CURSOR_UPDATE_INTERVAL == 0:
                     _save_cursor(time_us)
-                    _refresh_follows()
 
             if msg.get("kind") != "commit":
                 continue
