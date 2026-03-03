@@ -174,7 +174,7 @@ The consumer depends on `ollama.service` and will wait for the LLM to be availab
 - **Three independent processes** — The consumer, engagement updater, and server share no in-process state. They communicate through SQLite with WAL mode for concurrent read/write access.
 - **Consumer resumes from cursor** — On restart, the consumer picks up exactly where it left off via a persisted Jetstream cursor. No posts are re-processed.
 - **Quality tiers are inviolable** — The engagement bonus is capped below 1.0, so it can only reorder posts within the same quality tier, never promote a lower-quality post above a higher-quality one.
-- **Hashtag bypass** — Posts with science-relevant hashtags skip the keyword prefilter but still go through the LLM classifier. This catches posts by scientists who don't happen to use the right vocabulary.
+- **Hashtag bypass** — Posts with science-relevant hashtags (`#neuroscience`, `#cogsci`, `#neurobrain`, `#neuroskynece`, and ~20 others) skip the keyword prefilter but still go through the LLM classifier. This catches posts by scientists who don't happen to use the right vocabulary.
 
 ## Want to build your own?
 
