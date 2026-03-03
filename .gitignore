@@ -2,3 +2,4 @@ neurobrain.db
 .env
 venv/
 __pycache__/
+.claude/
