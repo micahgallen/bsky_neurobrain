@@ -2,7 +2,7 @@
 
 A custom Bluesky feed that surfaces high-quality neuroscience and cognitive science posts using a real-time AI pipeline. The entire firehose (~500 posts/sec) is filtered down to a handful of expert-level science discussions per hour — no politics, no pop-sci, no noise.
 
-**[View the feed on Bluesky](https://bsky.app/profile/micahgallen.com/feed/neurobrain)**
+**[View the feed on Bluesky](https://bsky.app/profile/micahgallen.com/feed/neurobrain)** | **[v2 (experimental)](https://bsky.app/profile/micahgallen.com/feed/neurobrain-v2)**
 
 ## What it covers
 
