@@ -350,7 +350,7 @@ _SCIENCE_HASHTAGS = {
     "neurobiology", "mentalhealth",
     "cognition", "brainstim",
     "eeg", "fmri", "neuroimaging",
-    "neurobrain", "neuroskyence",
+    "neurobrain", "neuroskyence", "psychscisky",
 }
 
 
