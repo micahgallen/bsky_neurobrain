@@ -52,7 +52,7 @@ Each stage dramatically reduces volume before the next expensive operation. The 
 
 ### Three-stage filtering in detail
 
-**Stage 1: Prefilter** — A regex scan against 312 science terms organized by domain (neuroscience, psychology, philosophy of mind, linguistics, cognitive anthropology, methods) plus 918 terms from the Cognitive Atlas. An exclusion list blocks posts containing political, crypto, or pseudoscience terms. Posts with science-relevant hashtags (e.g., `#neuroscience`, `#cogsci`) bypass keyword matching but still go through the LLM.
+**Stage 1: Prefilter** — A regex scan against 312 science terms organized by domain (neuroscience, psychology, philosophy of mind, linguistics, cognitive anthropology, methods) plus 918 concept terms from the [Cognitive Atlas](https://www.cognitiveatlas.org/) (Poldrack et al., 2011). An exclusion list blocks posts containing political, crypto, or pseudoscience terms. Posts with science-relevant hashtags (e.g., `#neuroscience`, `#cogsci`) bypass keyword matching but still go through the LLM.
 
 **Stage 2: LLM classifier** — Posts that pass the prefilter are scored 1-5 by a locally-hosted Qwen 2.5 3B model:
 
@@ -179,6 +179,12 @@ The consumer depends on `ollama.service` and will wait for the LLM to be availab
 ## Want to build your own?
 
 See **[HOWTO.md](HOWTO.md)** for a step-by-step guide to creating your own AI-curated Bluesky feed for any topic.
+
+## Acknowledgments
+
+The keyword prefilter incorporates 918 cognitive science concept terms from the [Cognitive Atlas](https://www.cognitiveatlas.org/), a collaborative knowledge base for cognitive neuroscience.
+
+> Poldrack RA, Kittur A, Kalar D, Miller E, Seppa C, Gil Y, Parker DS, Sabb FW and Bilder RM (2011). The Cognitive Atlas: Towards a knowledge foundation for cognitive neuroscience. *Front. Neuroinform.* 5:17. doi: [10.3389/fninf.2011.00017](https://doi.org/10.3389/fninf.2011.00017)
 
 ## License
 

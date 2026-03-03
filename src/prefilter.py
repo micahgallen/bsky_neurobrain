@@ -146,6 +146,10 @@ _KEYWORDS = [
     r"heritab\w*", r"twin stud\w*",
     r"genome.wide", r"GWAS", r"polygenic",
     # --- Cognitive Atlas (918 concepts, multi-word terms not already covered) ---
+    # Source: https://www.cognitiveatlas.org/concepts/a/
+    # Poldrack RA, et al. (2011). The Cognitive Atlas: Towards a knowledge
+    # foundation for cognitive neuroscience. Front. Neuroinform. 5:17.
+    # doi: 10.3389/fninf.2011.00017
     r"abstract analogy", r"abstract knowledge",
     r"acoustic coding", r"acoustic phonetic processing", r"acoustic processing",
     r"action initiation", r"activation level",
