@@ -91,6 +91,7 @@ def classify_post(text: str, uri: str = "") -> int:
                 ],
                 "stream": False,
                 "think": False,
+                "keep_alive": "30m",
                 "options": {
                     "temperature": 0.7,
                     "top_p": 0.8,
@@ -98,7 +99,7 @@ def classify_post(text: str, uri: str = "") -> int:
                     "num_predict": 5,
                 },
             },
-            timeout=10,
+            timeout=45,
         )
         resp.raise_for_status()
         answer = resp.json().get("message", {}).get("content", "").strip()

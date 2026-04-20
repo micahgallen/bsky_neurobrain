@@ -1,7 +1,7 @@
 import datetime
 from src.database import Post
 
-MAX_FEED_AGE_DAYS = 14  # must match SCORE_REFRESH_DAYS in src/engagement.py
+MAX_FEED_AGE_DAYS = 7  # must match SCORE_REFRESH_DAYS in src/engagement.py
 
 
 def handler(cursor, limit):

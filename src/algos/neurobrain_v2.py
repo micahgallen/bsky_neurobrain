@@ -1,10 +1,14 @@
 import datetime
 from src.database import Post
 
+MAX_FEED_AGE_HOURS = 72  # rising feed: fast decay, 3-day hard window
+
 
 def handler(cursor, limit):
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=MAX_FEED_AGE_HOURS)
     posts = (
         Post.select()
+        .where(Post.indexed_at >= cutoff)
         .order_by(Post.feed_score_v2.desc(), Post.indexed_at.desc())
         .limit(limit)
     )

@@ -9,6 +9,7 @@ import websockets
 from src.database import db, Post, SubscriptionState, init_db
 from src.prefilter import passes_prefilter, check_hashtags
 from src.classifier import classify_post
+from src.engagement import _compute_feed_score, _compute_feed_score_v2
 
 logger = logging.getLogger(__name__)
 
@@ -125,10 +126,17 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
         logger.debug("Rejected (score=%d): %s", score, uri)
         return
 
-    # Store approved post with quality score; initial feed_score = quality_score
+    # Initial feed scores at age=0, engagement=0 — matches engagement.py formulas
+    # so fresh posts don't briefly rank at their raw quality score before the
+    # engagement updater recomputes them.
+    initial_kwargs = dict(
+        quality_score=score, like_count=0, repost_count=0,
+        reply_count=0, quote_count=0, age_hours=0.0,
+    )
     Post.insert(
         uri=uri, cid=cid, quality_score=score,
-        feed_score=float(score), feed_score_v2=float(score),
+        feed_score=_compute_feed_score(**initial_kwargs),
+        feed_score_v2=_compute_feed_score_v2(**initial_kwargs),
     ).on_conflict_ignore().execute()
     logger.info("Approved (score=%d): %s", score, uri)
 

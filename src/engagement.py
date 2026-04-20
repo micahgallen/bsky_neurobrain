@@ -13,7 +13,7 @@ from src.database import db, Post, init_db
 logger = logging.getLogger(__name__)
 
 LOOKBACK_HOURS = 48        # API refresh window — fetch fresh engagement counts
-SCORE_REFRESH_DAYS = 14    # Score recompute window — apply current time decay
+SCORE_REFRESH_DAYS = 7     # Score recompute window (matches v1 MAX_FEED_AGE_DAYS)
 UPDATE_INTERVAL = 300      # seconds (5 minutes)
 BATCH_SIZE = 25            # Bluesky API limit for getPosts
 
@@ -43,20 +43,21 @@ def _compute_feed_score(
     quote_count: int,
     age_hours: float,
 ) -> float:
-    """Compute a combined feed score from quality and engagement (v1).
+    """Compute feed score for NeuroBrain v1 — quality digest, 7-day window.
 
-    Quality is king *short-term*: engagement is capped at +0.95 so it can't
-    promote a post above the next quality tier. Time decay is uncapped so
-    posts naturally sink as they age — the v1 feed itself is bounded by a
-    sliding window (see MAX_FEED_AGE_DAYS in algos/neurobrain.py), so very
-    negative scores just mean "well below anything currently visible."
+    Quality tiers are preserved: engagement bonus is capped below 1.0 so a
+    score-4 post never outranks a score-5. Time penalty is superlinear (weak
+    early, strong late) so posts drop toward the bottom of their tier as
+    they approach the 7-day cutoff. A small freshness boost gives brand-new
+    posts a short head start (~24h) before engagement takes over.
     """
     weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
-    # Engagement bonus capped at ~0.95 so it never crosses quality tiers
-    # log1p(100) ≈ 4.6, * 0.2 = 0.92 — even 100 weighted engagement stays < 1.0
-    engagement_bonus = min(math.log1p(weighted) * 0.2, 0.95)
-    time_penalty = age_hours / 120  # uncapped — old posts sink, eventually drop out of window
-    return quality_score + engagement_bonus - time_penalty
+    engagement_bonus = min(math.log1p(weighted) * 0.15, 0.7)
+    # Superlinear penalty: ~0 early, ~0.9 at 7d (grows as (age/7d)^1.5)
+    time_penalty = (min(age_hours, 168) / 168) ** 1.5 * 0.9
+    # Freshness boost: 0.3 at 0h, 0.11 at 12h, 0.04 at 24h, ~0 by 36h
+    freshness = 0.3 * math.exp(-age_hours / 12)
+    return quality_score + engagement_bonus + freshness - time_penalty
 
 
 def _compute_feed_score_v2(
@@ -67,20 +68,23 @@ def _compute_feed_score_v2(
     quote_count: int,
     age_hours: float,
 ) -> float:
-    """Compute feed score with exponential engagement decay + quality floor.
+    """Compute feed score for NeuroBrain Rising (v2) — fast decay, 72h window.
 
-    Engagement decays with an 8-hour half-life so fresh content can break
-    through without needing to accumulate engagement first. Exceptional
-    content (score 4-5) gets a small residual bonus that fades over 48h.
-    Quality tiers are still fully preserved.
+    Engagement-driven with a 6-hour half-life: bursty early engagement wins,
+    late accumulation fades. Quality acts as a modest additive bonus that
+    also fades over 72h, so stale high-quality posts can't sit on the feed
+    without fresh traction. Small freshness boost keeps brand-new posts
+    visible for their first couple hours before engagement decides.
     """
     weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
-    half_life = 8  # hours
-    decay = math.exp(-math.log(2) * age_hours / half_life)
-    engagement_bonus = min(math.log1p(weighted) * 0.2, 0.95) * decay
-    # Quality floor: score-5 gets +0.2, score-4 gets +0.1, fading over 48h
-    quality_residual = 0.1 * max(0, quality_score - 3) * max(0, 1 - age_hours / 48)
-    return quality_score + engagement_bonus + quality_residual
+    # 6-hour half-life on engagement — content needs to be both fresh AND engaging
+    decay = math.exp(-math.log(2) * age_hours / 6)
+    engagement_bonus = math.log1p(weighted) * 0.5 * decay
+    # Quality bonus fades linearly to 0 at 72h so old q5s can't linger
+    quality_bonus = (max(0, quality_score - 3) * 0.4) * max(0, 1 - age_hours / 72)
+    # Freshness boost: 0.3 at 0h, fades with 3h half-life
+    freshness = 0.3 * math.exp(-age_hours / 3)
+    return engagement_bonus + quality_bonus + freshness
 
 
 def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> int:
