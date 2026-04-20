@@ -55,8 +55,10 @@ def _compute_feed_score(
     engagement_bonus = min(math.log1p(weighted) * 0.15, 0.7)
     # Superlinear penalty: ~0 early, ~0.9 at 7d (grows as (age/7d)^1.5)
     time_penalty = (min(age_hours, 168) / 168) ** 1.5 * 0.9
-    # Freshness boost: 0.3 at 0h, 0.11 at 12h, 0.04 at 24h, ~0 by 36h
-    freshness = 0.3 * math.exp(-age_hours / 12)
+    # Freshness boost is gated on engagement — posts must earn their way to the
+    # top with some social validation. Full boost at weighted>=3 (e.g. 3 likes,
+    # or 1 repost). Zero-engagement posts rank at their raw quality score.
+    freshness = 0.3 * math.exp(-age_hours / 12) * min(1.0, weighted / 3)
     return quality_score + engagement_bonus + freshness - time_penalty
 
 
