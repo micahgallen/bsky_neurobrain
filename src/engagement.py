@@ -12,9 +12,10 @@ from src.database import db, Post, init_db
 
 logger = logging.getLogger(__name__)
 
-LOOKBACK_HOURS = 48
-UPDATE_INTERVAL = 300  # seconds (5 minutes)
-BATCH_SIZE = 25  # Bluesky API limit for getPosts
+LOOKBACK_HOURS = 48        # API refresh window — fetch fresh engagement counts
+SCORE_REFRESH_DAYS = 14    # Score recompute window — apply current time decay
+UPDATE_INTERVAL = 300      # seconds (5 minutes)
+BATCH_SIZE = 25            # Bluesky API limit for getPosts
 
 
 def _get_client() -> Client:
@@ -42,20 +43,19 @@ def _compute_feed_score(
     quote_count: int,
     age_hours: float,
 ) -> float:
-    """Compute a combined feed score from quality and engagement.
+    """Compute a combined feed score from quality and engagement (v1).
 
-    Quality is king: engagement can boost a post within its quality tier
-    but never promote it above higher-quality content. A viral score-3
-    pop-psych post should never outrank a score-5 paper discussion.
-
-    Score bands: quality_score forms the integer part, engagement fills
-    the fractional part (0.0 to ~0.9), time decay subtracts a small amount.
+    Quality is king *short-term*: engagement is capped at +0.95 so it can't
+    promote a post above the next quality tier. Time decay is uncapped so
+    posts naturally sink as they age — the v1 feed itself is bounded by a
+    sliding window (see MAX_FEED_AGE_DAYS in algos/neurobrain.py), so very
+    negative scores just mean "well below anything currently visible."
     """
     weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
-    # Engagement bonus capped at ~0.9 so it never crosses quality tiers
+    # Engagement bonus capped at ~0.95 so it never crosses quality tiers
     # log1p(100) ≈ 4.6, * 0.2 = 0.92 — even 100 weighted engagement stays < 1.0
     engagement_bonus = min(math.log1p(weighted) * 0.2, 0.95)
-    time_penalty = min(age_hours / 120, 0.5)
+    time_penalty = age_hours / 120  # uncapped — old posts sink, eventually drop out of window
     return quality_score + engagement_bonus - time_penalty
 
 
@@ -83,29 +83,13 @@ def _compute_feed_score_v2(
     return quality_score + engagement_bonus + quality_residual
 
 
-def update_engagement() -> int:
-    """Fetch engagement metrics for recent posts and update feed scores.
-
-    Returns the number of posts updated.
-    """
-    db.connect(reuse_if_open=True)
-
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=LOOKBACK_HOURS)
-    posts = list(
-        Post.select()
-        .where(Post.indexed_at >= cutoff)
-        .order_by(Post.indexed_at.desc())
-    )
-
+def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> int:
+    """Fetch fresh engagement counts from Bluesky API and recompute v1 + v2 scores."""
     if not posts:
-        logger.info("No recent posts to update")
         return 0
-
-    logger.info("Updating engagement for %d posts", len(posts))
 
     client = _get_client()
     updated = 0
-    now = datetime.datetime.utcnow()
 
     for i in range(0, len(posts), BATCH_SIZE):
         batch = posts[i : i + BATCH_SIZE]
@@ -150,8 +134,68 @@ def update_engagement() -> int:
 
             updated += 1
 
-    logger.info("Updated engagement for %d/%d posts", updated, len(posts))
     return updated
+
+
+def _recompute_scores(posts: list[Post], now: datetime.datetime) -> int:
+    """Recompute v1 + v2 feed scores from stored engagement values + current time decay.
+
+    Does NOT touch engagement_updated_at — that field tracks last API-confirmed
+    engagement, not last score recompute. v2 score is age-dependent too (8h
+    half-life on engagement, 48h fade on quality residual), so it benefits
+    from the recompute even though the v2 handler has no age window.
+    """
+    if not posts:
+        return 0
+    updated = 0
+    for post in posts:
+        age_hours = max((now - post.indexed_at).total_seconds() / 3600, 0.01)
+        score_kwargs = dict(
+            quality_score=post.quality_score,
+            like_count=post.like_count,
+            repost_count=post.repost_count,
+            reply_count=post.reply_count,
+            quote_count=post.quote_count,
+            age_hours=age_hours,
+        )
+        Post.update(
+            feed_score=_compute_feed_score(**score_kwargs),
+            feed_score_v2=_compute_feed_score_v2(**score_kwargs),
+        ).where(Post.id == post.id).execute()
+        updated += 1
+    return updated
+
+
+def update_engagement() -> int:
+    """Refresh feed scores for posts in the active window.
+
+    Two phases:
+      B (cheap, local): posts 48h–14d → recompute v1+v2 scores from stored engagement.
+      A (expensive, network): posts <48h → fetch fresh engagement from Bluesky API.
+
+    Phase B runs first so an API outage in Phase A still produces fresh decay updates.
+    """
+    db.connect(reuse_if_open=True)
+    now = datetime.datetime.utcnow()
+
+    api_cutoff = now - datetime.timedelta(hours=LOOKBACK_HOURS)
+    score_cutoff = now - datetime.timedelta(days=SCORE_REFRESH_DAYS)
+
+    older = list(
+        Post.select()
+        .where((Post.indexed_at >= score_cutoff) & (Post.indexed_at < api_cutoff))
+    )
+    decay_updated = _recompute_scores(older, now)
+
+    fresh = list(
+        Post.select()
+        .where(Post.indexed_at >= api_cutoff)
+        .order_by(Post.indexed_at.desc())
+    )
+    api_updated = _refresh_engagement_via_api(fresh, now)
+
+    logger.info("Engagement: %d API-refreshed, %d decay-only", api_updated, decay_updated)
+    return api_updated + decay_updated
 
 
 def run_loop() -> None:

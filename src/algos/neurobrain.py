@@ -1,10 +1,14 @@
 import datetime
 from src.database import Post
 
+MAX_FEED_AGE_DAYS = 14  # must match SCORE_REFRESH_DAYS in src/engagement.py
+
 
 def handler(cursor, limit):
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=MAX_FEED_AGE_DAYS)
     posts = (
         Post.select()
+        .where(Post.indexed_at >= cutoff)
         .order_by(Post.feed_score.desc(), Post.indexed_at.desc())
         .limit(limit)
     )
