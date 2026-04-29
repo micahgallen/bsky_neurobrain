@@ -21,6 +21,12 @@ SERVICE_NAME = "jetstream"
 CURSOR_UPDATE_INTERVAL = 50  # Update cursor every N messages
 QUALITY_THRESHOLD = 3  # Minimum score to include in feed
 
+# Authors whose posts are excluded regardless of quality. High-engagement
+# off-topic accounts dominate ranking and crowd out genuine neuroscience.
+BANNED_DIDS = {
+    "did:plc:cyy3irakdgdbhcdtd4ik6aro",  # thecovidinfoguy.bsky.social
+}
+
 
 def _get_cursor() -> int | None:
     """Load the saved cursor from the database."""
@@ -62,6 +68,9 @@ def _extract_hashtags(record: dict) -> list[str]:
 
 def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     """Process a new post through the filter pipeline."""
+    if did in BANNED_DIDS:
+        return
+
     # English only
     langs = record.get("langs") or []
     if "en" not in langs:
