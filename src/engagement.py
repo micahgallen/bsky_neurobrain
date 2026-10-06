@@ -5,9 +5,8 @@ import logging
 import math
 import time
 
-from atproto import Client
+import requests
 
-from src.config import HANDLE, PASSWORD
 from src.database import db, Post, init_db
 from src.postmeta import extract_link
 
@@ -18,12 +17,28 @@ SCORE_REFRESH_DAYS = 7     # Score recompute window (matches v1 MAX_FEED_AGE_DAY
 UPDATE_INTERVAL = 300      # seconds (5 minutes)
 BATCH_SIZE = 25            # Bluesky API limit for getPosts
 
+# Public AppView, no auth needed. We read the raw JSON instead of going through
+# the atproto SDK's strict pydantic models: new embed types Bluesky ships
+# (e.g. app.bsky.embed.gallery#view, Oct 2026) made the SDK reject whole
+# batches, so those 25 posts silently skipped their engagement refresh.
+GET_POSTS_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts"
+_session = requests.Session()
 
-def _get_client() -> Client:
-    """Create and authenticate an atproto client."""
-    client = Client()
-    client.login(HANDLE, PASSWORD)
-    return client
+
+def _fetch_post_views(uris: list[str]) -> dict[str, dict]:
+    """Return {uri: postView dict} for up to BATCH_SIZE URIs. Missing/deleted
+    posts are simply absent. Retries once on a transient failure."""
+    params = [("uris", u) for u in uris]
+    for attempt in (1, 2):
+        try:
+            resp = _session.get(GET_POSTS_URL, params=params, timeout=30)
+            resp.raise_for_status()
+            return {pv["uri"]: pv for pv in resp.json().get("posts", [])}
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(2)
+    return {}
 
 
 def _weighted_engagement(
@@ -107,24 +122,24 @@ def _compute_feed_score_v2(
 
 
 def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> int:
-    """Fetch fresh engagement counts from Bluesky API and recompute v1 + v2 scores."""
+    """Fetch fresh engagement counts from Bluesky and recompute v1 + v2 scores.
+
+    Also backfills is_reply / link from the fetched record for posts ingested
+    before those columns existed.
+    """
     if not posts:
         return 0
 
-    client = _get_client()
     updated = 0
 
     for i in range(0, len(posts), BATCH_SIZE):
         batch = posts[i : i + BATCH_SIZE]
-        uris = [p.uri for p in batch]
 
         try:
-            response = client.get_posts(uris)
+            api_posts = _fetch_post_views([p.uri for p in batch])
         except Exception:
             logger.exception("Failed to fetch posts batch %d", i // BATCH_SIZE)
             continue
-
-        api_posts = {pv.uri: pv for pv in response.posts}
 
         for post in batch:
             pv = api_posts.get(post.uri)
@@ -134,10 +149,10 @@ def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> in
             age_hours = max((now - post.indexed_at).total_seconds() / 3600, 0.01)
 
             engagement_kwargs = dict(
-                like_count=pv.like_count or 0,
-                repost_count=pv.repost_count or 0,
-                reply_count=pv.reply_count or 0,
-                quote_count=pv.quote_count or 0,
+                like_count=pv.get("likeCount") or 0,
+                repost_count=pv.get("repostCount") or 0,
+                reply_count=pv.get("replyCount") or 0,
+                quote_count=pv.get("quoteCount") or 0,
             )
             score_kwargs = dict(
                 quality_score=post.quality_score,
@@ -145,19 +160,13 @@ def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> in
                 **engagement_kwargs,
             )
 
-            # Backfill reply flag / link from the fetched record for posts
-            # ingested before these columns existed.
-            record = getattr(pv, "record", None)
-            meta_kwargs = {}
-            if record is not None:
-                reply = bool(getattr(record, "reply", None))
-                meta_kwargs["is_reply"] = int(reply)
-                if post.link is None:
-                    link = extract_link_from_record_view(record)
-                    if link:
-                        meta_kwargs["link"] = link
-            else:
-                reply = bool(post.is_reply)
+            record = pv.get("record") or {}
+            reply = bool(record.get("reply"))
+            meta_kwargs = {"is_reply": int(reply)}
+            if post.link is None:
+                link = extract_link(record)
+                if link:
+                    meta_kwargs["link"] = link
 
             feed_score = _compute_feed_score(**score_kwargs)
             feed_score_v2 = _compute_feed_score_v2(is_reply=reply, **score_kwargs)
@@ -201,15 +210,6 @@ def _recompute_scores(posts: list[Post], now: datetime.datetime) -> int:
         ).where(Post.id == post.id).execute()
         updated += 1
     return updated
-
-
-def extract_link_from_record_view(record) -> str | None:
-    """Adapter: atproto record model -> plain dict -> postmeta.extract_link."""
-    try:
-        data = record.model_dump(by_alias=True) if hasattr(record, "model_dump") else dict(record)
-    except Exception:
-        return None
-    return extract_link(data)
 
 
 def _recompute_link_ranks(now: datetime.datetime) -> int:
