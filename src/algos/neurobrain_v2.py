@@ -1,14 +1,38 @@
 import datetime
 from src.database import Post
+from src.algos.neurobrain import MAX_FEED_AGE_DAYS as TOP_WINDOW_DAYS, LINK_CAP
+from src.engagement import RISING_MIN_QUALITY, RISING_MIN_ENGAGEMENT
 
-MAX_FEED_AGE_HOURS = 72  # rising feed: fast decay, 3-day hard window
+MAX_FEED_AGE_HOURS = 48  # must match RISING_MAX_AGE_HOURS in src/engagement.py
+TOP_EXCLUDE_N = 30       # posts already on Top's first page are not "rising"
 
 
 def handler(cursor, limit):
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=MAX_FEED_AGE_HOURS)
+    now = datetime.datetime.utcnow()
+    cutoff = now - datetime.timedelta(hours=MAX_FEED_AGE_HOURS)
+    top_cutoff = now - datetime.timedelta(days=TOP_WINDOW_DAYS)
+    already_top = (
+        Post.select(Post.id)
+        .where((Post.indexed_at >= top_cutoff) & (Post.link_rank <= LINK_CAP))
+        .order_by(Post.feed_score.desc(), Post.indexed_at.desc())
+        .limit(TOP_EXCLUDE_N)
+    )
+    weighted = (
+        Post.like_count + Post.repost_count * 3 + Post.reply_count * 2 + Post.quote_count * 4
+    )
+    # Eligibility gates are duplicated here from _compute_feed_score_v2 so the
+    # feed is correct even if a stored score is stale.
     posts = (
         Post.select()
-        .where(Post.indexed_at >= cutoff)
+        .where(
+            (Post.indexed_at >= cutoff)
+            & (Post.feed_score_v2 > 0)      # 0 = failed an eligibility gate
+            & (Post.quality_score >= RISING_MIN_QUALITY)
+            & (weighted >= RISING_MIN_ENGAGEMENT)
+            & (Post.is_reply == 0)
+            & (Post.link_rank <= LINK_CAP)
+            & (Post.id.not_in(already_top))
+        )
         .order_by(Post.feed_score_v2.desc(), Post.indexed_at.desc())
         .limit(limit)
     )

@@ -2,7 +2,7 @@
 
 A custom Bluesky feed that surfaces high-quality neuroscience and cognitive science posts using a real-time AI pipeline. The entire firehose (~500 posts/sec) is filtered down to a handful of expert-level science discussions per hour — no politics, no pop-sci, no noise.
 
-**[View the feed on Bluesky](https://bsky.app/profile/micahgallen.com/feed/neurobrain)** | **[v2 (experimental)](https://bsky.app/profile/micahgallen.com/feed/neurobrain-v2)**
+**[View the feed on Bluesky](https://bsky.app/profile/micahgallen.com/feed/neurobrain)** | **[NeuroBrain Rising](https://bsky.app/profile/micahgallen.com/feed/neurobrain-v2)**
 
 ## What it covers
 
@@ -70,25 +70,37 @@ Posts scoring 3+ are accepted. The classifier explicitly rejects general health 
 
 ### Feed ranking algorithms
 
-Two ranking algorithms run in parallel on the same data:
+Two feeds are served from the same accepted posts. Both hide posts beyond the
+third one sharing the same outbound link (`link_rank <= 3`), so a big news day
+cannot fill a feed with twenty copies of one article.
 
-**NeuroBrain (v1)** — Linear time decay:
+**NeuroBrain Top** — weekly quality digest, 7-day window:
 ```
 engagement = likes + reposts×3 + replies×2 + quotes×4
-bonus = min(log(1 + engagement) × 0.2, 0.95)
-penalty = min(age_hours / 120, 0.5)
-score = quality + bonus - penalty
+bonus      = min(log(1 + engagement) × 0.15, 0.7)
+penalty    = (min(age_hours, 168) / 168)^1.5 × 0.9
+freshness  = 0.3 × exp(-age_hours / 12) × min(1, engagement / 3)
+score      = quality + bonus + freshness - penalty
+```
+Quality tiers are preserved: a score-4 post never outranks a score-5.
+
+**NeuroBrain Rising** — good, new, gaining traction, and not already in Top. 48-hour window.
+Eligibility (anything failing scores 0 and is hidden):
+- quality 4 or 5
+- weighted engagement ≥ 3 (e.g. 3 likes or 1 repost)
+- not a reply
+- not among the first 30 posts of Top
+```
+decay  = exp(-ln(2) × age_hours / 8)              # 8-hour half-life
+score  = log(1 + engagement) × decay + 0.5 × (quality - 4) × max(0, 1 - age_hours/48)
 ```
 
-**NeuroBrain v2** — Exponential decay with quality floor:
-```
-decay = exp(-ln(2) × age_hours / 8)          # 8-hour half-life
-bonus = min(log(1 + engagement) × 0.2, 0.95) × decay
-residual = 0.1 × max(0, quality - 3) × max(0, 1 - age_hours/48)
-score = quality + bonus + residual
-```
+### Topic blacklist
 
-v2 lets fresh posts break through without needing to out-engage older content. Engagement value decays exponentially so a 16-hour-old post with 10 likes only barely leads a fresh post. Score 4-5 posts get a small residual bonus that fades over 48 hours.
+Long COVID / ME-CFS / COVID posts are dropped at ingest (`src/postmeta.py`).
+They score well on the neuro rubric but come from a few very active niche
+accounts and were crowding both feeds. The check runs before the science-hashtag
+bypass so tagged posts cannot route around it.
 
 ## Tech stack
 
@@ -112,11 +124,12 @@ src/
   prefilter.py          # Keyword prefilter (312 terms + exclusions)
   classifier.py         # Ollama LLM classifier (quality score 1-5)
   consumer.py           # Jetstream WebSocket consumer with auto-reconnect
-  engagement.py         # Background engagement metric updater (v1 + v2 scoring)
+  engagement.py         # Background engagement metric updater (Top + Rising scoring, link ranks)
+  postmeta.py           # Topic blacklist, reply detection, link extraction
   server.py             # Flask API (3 XRPC endpoints)
   algos/
     neurobrain.py       # v1 feed ranking (linear decay)
-    neurobrain_v2.py    # v2 feed ranking (exponential decay)
+    neurobrain_v2.py    # Rising feed handler (gated, excludes Top page 1)
 scripts/
   publish_feed.py               # Register NeuroBrain feed with Bluesky
   publish_neurobrain_v2_feed.py # Register v2 feed with Bluesky

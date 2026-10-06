@@ -34,6 +34,15 @@ class Post(BaseModel):
     engagement_updated_at = DateTimeField(null=True, default=None)
     feed_score = FloatField(default=3.0, index=True)
     feed_score_v2 = FloatField(default=3.0, index=True)
+    # Reply-to-another-post flag (from the record's `reply` field). Replies
+    # stay eligible for Top but are excluded from Rising.
+    is_reply = IntegerField(default=0)
+    # Normalised outbound link (link card or first link facet), used to cap
+    # how many posts sharing one URL appear in a feed window.
+    link = CharField(null=True, default=None)
+    # Rank of this post among live posts sharing the same link (1 = best by
+    # feed_score). Recomputed by the engagement updater; 1 when link is NULL.
+    link_rank = IntegerField(default=1)
 
 
 class SubscriptionState(BaseModel):
@@ -67,6 +76,9 @@ def _migrate_db():
         "engagement_updated_at": DateTimeField(null=True, default=None),
         "feed_score": FloatField(default=3.0),
         "feed_score_v2": FloatField(default=3.0),
+        "is_reply": IntegerField(default=0),
+        "link": CharField(null=True, default=None),
+        "link_rank": IntegerField(default=1),
     }
     for col_name, col_field in new_post_cols.items():
         if col_name not in existing:
@@ -95,6 +107,8 @@ def _migrate_db():
     db.execute_sql("UPDATE post SET repost_count = 0 WHERE repost_count IS NULL")
     db.execute_sql("UPDATE post SET reply_count = 0 WHERE reply_count IS NULL")
     db.execute_sql("UPDATE post SET quote_count = 0 WHERE quote_count IS NULL")
+    db.execute_sql("UPDATE post SET is_reply = 0 WHERE is_reply IS NULL")
+    db.execute_sql("UPDATE post SET link_rank = 1 WHERE link_rank IS NULL")
 
     db.execute_sql(
         "CREATE INDEX IF NOT EXISTS post_feed_score ON post(feed_score)"
@@ -102,6 +116,7 @@ def _migrate_db():
     db.execute_sql(
         "CREATE INDEX IF NOT EXISTS post_feed_score_v2 ON post(feed_score_v2)"
     )
+    db.execute_sql("CREATE INDEX IF NOT EXISTS post_link ON post(link)")
 
 
 def init_db():

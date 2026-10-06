@@ -92,10 +92,10 @@ def classify_post(text: str, uri: str = "") -> int:
                 "stream": False,
                 "think": False,
                 "keep_alive": "30m",
+                # Deterministic scoring: the same post should always get the
+                # same score. (Was temperature 0.7 / top_k 20.)
                 "options": {
-                    "temperature": 0.7,
-                    "top_p": 0.8,
-                    "top_k": 20,
+                    "temperature": 0.0,
                     "num_predict": 5,
                 },
             },

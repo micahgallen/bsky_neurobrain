@@ -10,6 +10,7 @@ from src.database import db, Post, SubscriptionState, init_db
 from src.prefilter import passes_prefilter, check_hashtags
 from src.classifier import classify_post
 from src.engagement import _compute_feed_score, _compute_feed_score_v2
+from src.postmeta import is_blacklisted, is_reply, extract_link
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
     # Extract hashtags from structured facets
     hashtags = _extract_hashtags(record)
 
+    # Topic blacklist (long COVID / ME-CFS / COVID). Checked before the
+    # science-hashtag bypass so tagged posts cannot route around it.
+    if is_blacklisted(text, quoted_text, hashtags):
+        return
+
     # Science hashtag bypasses keyword prefilter, but classifier still gates
     has_science_hashtag = check_hashtags(hashtags)
     if not has_science_hashtag and not passes_prefilter(text):
@@ -142,12 +148,15 @@ def _handle_create(did: str, rkey: str, cid: str, record: dict) -> None:
         quality_score=score, like_count=0, repost_count=0,
         reply_count=0, quote_count=0, age_hours=0.0,
     )
+    reply = is_reply(record)
     Post.insert(
         uri=uri, cid=cid, quality_score=score,
+        is_reply=int(reply),
+        link=extract_link(record),
         feed_score=_compute_feed_score(**initial_kwargs),
-        feed_score_v2=_compute_feed_score_v2(**initial_kwargs),
+        feed_score_v2=_compute_feed_score_v2(is_reply=reply, **initial_kwargs),
     ).on_conflict_ignore().execute()
-    logger.info("Approved (score=%d): %s", score, uri)
+    logger.info("Approved (score=%d%s): %s", score, ", reply" if reply else "", uri)
 
 
 async def _consume() -> None:

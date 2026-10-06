@@ -9,6 +9,7 @@ from atproto import Client
 
 from src.config import HANDLE, PASSWORD
 from src.database import db, Post, init_db
+from src.postmeta import extract_link
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,13 @@ def _compute_feed_score(
     return quality_score + engagement_bonus + freshness - time_penalty
 
 
+RISING_MIN_QUALITY = 4       # Rising is for good posts only
+RISING_MIN_ENGAGEMENT = 3    # weighted; e.g. 3 likes or 1 repost — must be *rising*
+RISING_MAX_AGE_HOURS = 48    # must match MAX_FEED_AGE_HOURS in src/algos/neurobrain_v2.py
+RISING_HALF_LIFE_HOURS = 8
+LINK_CAP = 3                 # max posts per shared link kept visible in a feed window
+
+
 def _compute_feed_score_v2(
     quality_score: int,
     like_count: int,
@@ -69,24 +77,33 @@ def _compute_feed_score_v2(
     reply_count: int,
     quote_count: int,
     age_hours: float,
+    is_reply: bool = False,
 ) -> float:
-    """Compute feed score for NeuroBrain Rising (v2) — fast decay, 72h window.
+    """Compute feed score for NeuroBrain Rising (v2).
 
-    Engagement-driven with a 6-hour half-life: bursty early engagement wins,
-    late accumulation fades. Quality acts as a modest additive bonus that
-    also fades over 72h, so stale high-quality posts can't sit on the feed
-    without fresh traction. Small freshness boost keeps brand-new posts
-    visible for their first couple hours before engagement decides.
+    Rising = good, new, gaining traction, and not already in Top (the last
+    part is enforced in the handler). Eligibility gates return 0.0, which the
+    handler filters out:
+      - quality >= 4 (quality-3 posts with a burst of likes were dominating)
+      - weighted engagement >= 3 (zero-engagement posts are not "rising")
+      - not a reply (mid-thread commentary was half the feed)
+      - under 48h old
+
+    Score is log engagement with an 8h half-life plus a small q5 bonus that
+    fades over the window. No ungated freshness boost.
     """
     weighted = _weighted_engagement(like_count, repost_count, reply_count, quote_count)
-    # 6-hour half-life on engagement — content needs to be both fresh AND engaging
-    decay = math.exp(-math.log(2) * age_hours / 6)
-    engagement_bonus = math.log1p(weighted) * 0.5 * decay
-    # Quality bonus fades linearly to 0 at 72h so old q5s can't linger
-    quality_bonus = (max(0, quality_score - 3) * 0.4) * max(0, 1 - age_hours / 72)
-    # Freshness boost: 0.3 at 0h, fades with 3h half-life
-    freshness = 0.3 * math.exp(-age_hours / 3)
-    return engagement_bonus + quality_bonus + freshness
+    if (
+        is_reply
+        or quality_score < RISING_MIN_QUALITY
+        or weighted < RISING_MIN_ENGAGEMENT
+        or age_hours > RISING_MAX_AGE_HOURS
+    ):
+        return 0.0
+    decay = math.exp(-math.log(2) * age_hours / RISING_HALF_LIFE_HOURS)
+    engagement = math.log1p(weighted) * decay
+    quality_bonus = 0.5 * (quality_score - RISING_MIN_QUALITY) * max(0.0, 1 - age_hours / RISING_MAX_AGE_HOURS)
+    return engagement + quality_bonus
 
 
 def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> int:
@@ -128,14 +145,29 @@ def _refresh_engagement_via_api(posts: list[Post], now: datetime.datetime) -> in
                 **engagement_kwargs,
             )
 
+            # Backfill reply flag / link from the fetched record for posts
+            # ingested before these columns existed.
+            record = getattr(pv, "record", None)
+            meta_kwargs = {}
+            if record is not None:
+                reply = bool(getattr(record, "reply", None))
+                meta_kwargs["is_reply"] = int(reply)
+                if post.link is None:
+                    link = extract_link_from_record_view(record)
+                    if link:
+                        meta_kwargs["link"] = link
+            else:
+                reply = bool(post.is_reply)
+
             feed_score = _compute_feed_score(**score_kwargs)
-            feed_score_v2 = _compute_feed_score_v2(**score_kwargs)
+            feed_score_v2 = _compute_feed_score_v2(is_reply=reply, **score_kwargs)
 
             Post.update(
                 engagement_updated_at=now,
                 feed_score=feed_score,
                 feed_score_v2=feed_score_v2,
                 **engagement_kwargs,
+                **meta_kwargs,
             ).where(Post.id == post.id).execute()
 
             updated += 1
@@ -147,9 +179,8 @@ def _recompute_scores(posts: list[Post], now: datetime.datetime) -> int:
     """Recompute v1 + v2 feed scores from stored engagement values + current time decay.
 
     Does NOT touch engagement_updated_at — that field tracks last API-confirmed
-    engagement, not last score recompute. v2 score is age-dependent too (8h
-    half-life on engagement, 48h fade on quality residual), so it benefits
-    from the recompute even though the v2 handler has no age window.
+    engagement, not last score recompute. Posts here are older than 48h, so
+    their v2 (Rising) score is always 0.
     """
     if not posts:
         return 0
@@ -166,10 +197,45 @@ def _recompute_scores(posts: list[Post], now: datetime.datetime) -> int:
         )
         Post.update(
             feed_score=_compute_feed_score(**score_kwargs),
-            feed_score_v2=_compute_feed_score_v2(**score_kwargs),
+            feed_score_v2=_compute_feed_score_v2(is_reply=bool(post.is_reply), **score_kwargs),
         ).where(Post.id == post.id).execute()
         updated += 1
     return updated
+
+
+def extract_link_from_record_view(record) -> str | None:
+    """Adapter: atproto record model -> plain dict -> postmeta.extract_link."""
+    try:
+        data = record.model_dump(by_alias=True) if hasattr(record, "model_dump") else dict(record)
+    except Exception:
+        return None
+    return extract_link(data)
+
+
+def _recompute_link_ranks(now: datetime.datetime) -> int:
+    """Rank posts sharing the same link by feed_score within the 7-day window.
+
+    Handlers only serve link_rank <= LINK_CAP, so at most LINK_CAP posts about
+    the same URL show up per feed. Posts without a link always rank 1.
+    """
+    cutoff = now - datetime.timedelta(days=SCORE_REFRESH_DAYS)
+    rows = list(
+        Post.select(Post.id, Post.link, Post.link_rank, Post.feed_score)
+        .where((Post.indexed_at >= cutoff) & (Post.link.is_null(False)))
+        .order_by(Post.link, Post.feed_score.desc(), Post.indexed_at.desc())
+    )
+    changed = 0
+    rank = 0
+    current = None
+    with db.atomic():
+        for row in rows:
+            if row.link != current:
+                current, rank = row.link, 0
+            rank += 1
+            if row.link_rank != rank:
+                Post.update(link_rank=rank).where(Post.id == row.id).execute()
+                changed += 1
+    return changed
 
 
 def update_engagement() -> int:
@@ -200,7 +266,12 @@ def update_engagement() -> int:
     )
     api_updated = _refresh_engagement_via_api(fresh, now)
 
-    logger.info("Engagement: %d API-refreshed, %d decay-only", api_updated, decay_updated)
+    rank_updated = _recompute_link_ranks(now)
+
+    logger.info(
+        "Engagement: %d API-refreshed, %d decay-only, %d link-rank changes",
+        api_updated, decay_updated, rank_updated,
+    )
     return api_updated + decay_updated
 
 
