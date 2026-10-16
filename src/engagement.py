@@ -194,21 +194,24 @@ def _recompute_scores(posts: list[Post], now: datetime.datetime) -> int:
     if not posts:
         return 0
     updated = 0
-    for post in posts:
-        age_hours = max((now - post.indexed_at).total_seconds() / 3600, 0.01)
-        score_kwargs = dict(
-            quality_score=post.quality_score,
-            like_count=post.like_count,
-            repost_count=post.repost_count,
-            reply_count=post.reply_count,
-            quote_count=post.quote_count,
-            age_hours=age_hours,
-        )
-        Post.update(
-            feed_score=_compute_feed_score(**score_kwargs),
-            feed_score_v2=_compute_feed_score_v2(is_reply=bool(post.is_reply), **score_kwargs),
-        ).where(Post.id == post.id).execute()
-        updated += 1
+    # One transaction: ~9k autocommitted updates in a tight loop starve the
+    # consumer of the write lock until its busy timeout expires.
+    with db.atomic():
+        for post in posts:
+            age_hours = max((now - post.indexed_at).total_seconds() / 3600, 0.01)
+            score_kwargs = dict(
+                quality_score=post.quality_score,
+                like_count=post.like_count,
+                repost_count=post.repost_count,
+                reply_count=post.reply_count,
+                quote_count=post.quote_count,
+                age_hours=age_hours,
+            )
+            Post.update(
+                feed_score=_compute_feed_score(**score_kwargs),
+                feed_score_v2=_compute_feed_score_v2(is_reply=bool(post.is_reply), **score_kwargs),
+            ).where(Post.id == post.id).execute()
+            updated += 1
     return updated
 
 

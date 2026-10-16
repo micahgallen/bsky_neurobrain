@@ -14,7 +14,7 @@ from playhouse.migrate import SqliteMigrator, migrate
 
 logger = logging.getLogger(__name__)
 
-db = SqliteDatabase("neurobrain.db", pragmas={"journal_mode": "wal"})
+db = SqliteDatabase("neurobrain.db", pragmas={"journal_mode": "wal"}, timeout=30)
 
 
 class BaseModel(Model):
