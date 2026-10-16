@@ -1,11 +1,24 @@
 from flask import Flask, jsonify, request
 from src.config import HOSTNAME, SERVICE_DID, FEED_URI
 from src.algos import ALGOS
-from src.database import init_db
+from src.database import db, init_db
 
 app = Flask(__name__)
 
 init_db()
+
+
+# peewee keeps one connection per thread and Flask serves each request on a
+# new thread, so close it explicitly or every request leaks a file descriptor.
+@app.before_request
+def _db_connect():
+    db.connect(reuse_if_open=True)
+
+
+@app.teardown_request
+def _db_close(exc):
+    if not db.is_closed():
+        db.close()
 
 
 @app.route("/.well-known/did.json", methods=["GET"])
